@@ -1,83 +1,261 @@
-version: '3.9'
+name: parknest-dev
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ParkNest — Development Stack
+# Works on Windows, macOS (Intel + Apple Silicon), and Linux.
+#
+# USAGE
+#   Linux / macOS:  bash scripts/dev.sh [up|down|logs ...]
+#   Windows:        pwsh scripts/dev.ps1 [up|down|logs ...]
+#
+# Platform-specific overrides (applied automatically by dev.sh / dev.ps1):
+#   docker-compose.mac.yml     — arm64 platform, VirtioFS hints
+#   docker-compose.windows.yml — polling=true, linux/amd64
+#   docker-compose.linux.yml   — UID/GID mapping
+#
+# WHY named volumes for node_modules?
+#   On Windows, bind-mounted node_modules causes ENOENT and permission errors.
+#   Named volumes live entirely inside Docker VM — no host filesystem conflict.
+#   When package.json changes: docker compose build api web (reinstalls inside image).
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-common-env: &common-env
+  NODE_ENV: development
+  # File-watch polling — set to "true" on Windows via docker-compose.windows.yml
+  CHOKIDAR_USEPOLLING: "${CHOKIDAR_USEPOLLING:-false}"
+  CHOKIDAR_INTERVAL: "${CHOKIDAR_INTERVAL:-300}"
+  WATCHPACK_POLLING: "${WATCHPACK_POLLING:-false}"
 
 services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
-    container_name: parko_postgres
+    container_name: parknest_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-parko}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-parko_secret}
-      POSTGRES_DB: ${POSTGRES_DB:-parko_db}
+      POSTGRES_USER: ${POSTGRES_USER:-parknest}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-parknest_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-parknest_db}
+      PGDATA: /var/lib/postgresql/data/pgdata
     ports:
-      - "5433:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks: [parknest]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U parko"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-parknest}"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 10s
 
+  # ── Redis ───────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
-    container_name: parko_redis
+    container_name: parknest_redis
     restart: unless-stopped
-    command: redis-server --requirepass ${REDIS_PASSWORD:-}
+    command: >
+      redis-server
+        --requirepass ${REDIS_PASSWORD:-redisdev}
+        --appendonly yes
+        --appendfsync everysec
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
+    networks: [parknest]
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redisdev}", "ping"]
       interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── MinIO (S3-compatible file storage) ──────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: parknest_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-parknest}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-parknest_minio_dev}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Console UI → http://localhost:9001
+    volumes:
+      - minio_data:/data
+    networks: [parknest]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
       timeout: 5s
       retries: 5
 
+  # ── MinIO bucket initialisation (runs once then exits) ──────────────────────
+  minio-init:
+    image: minio/mc:latest
+    container_name: parknest_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks: [parknest]
+    entrypoint: >
+      sh -c "
+        mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-parknest} ${MINIO_ROOT_PASSWORD:-parknest_minio_dev}
+        mc mb --ignore-existing local/parking-spaces
+        mc mb --ignore-existing local/user-profiles
+        mc anonymous set download local/parking-spaces
+        echo 'MinIO buckets ready'
+      "
+
+  # ── Mailhog (SMTP mock — catches all outgoing emails) ───────────────────────
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: parknest_mailhog
+    restart: unless-stopped
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI → http://localhost:8025
+    networks: [parknest]
+
+  # ── Adminer (PostgreSQL web UI) ─────────────────────────────────────────────
+  adminer:
+    image: adminer:latest
+    container_name: parknest_adminer
+    restart: unless-stopped
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+      ADMINER_DESIGN: pepa-linha
+    ports:
+      - "8080:8080"   # → http://localhost:8080
+    networks: [parknest]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── API (NestJS — hot reload) ────────────────────────────────────────────────
   api:
     build:
       context: ./apps/api
-      dockerfile: ../../docker/api.Dockerfile
-      target: development
-    container_name: parko_api
+      dockerfile: ../../docker/api.dev.Dockerfile
+    container_name: parknest_api
     restart: unless-stopped
-    env_file: .env
+    env_file:
+      - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-parko}:${POSTGRES_PASSWORD:-parko_secret}@postgres:5432/${POSTGRES_DB:-parko_db}
+      <<: *common-env
+      PORT: "3001"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-parknest}:${POSTGRES_PASSWORD:-parknest_dev}@postgres:5432/${POSTGRES_DB:-parknest_db}
       REDIS_HOST: redis
-      REDIS_PORT: 6379
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redisdev}
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: "9000"
+      MINIO_USE_SSL: "false"
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-parknest}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-parknest_minio_dev}
+      SMTP_HOST: mailhog
+      SMTP_PORT: "1025"
+      SMTP_USER: ""
+      SMTP_PASS: ""
     ports:
       - "3001:3001"
     volumes:
-      - ./apps/api:/app
-      - /app/node_modules
+      # Bind-mount source for hot reload
+      - ./apps/api/src:/app/src
+      - ./apps/api/prisma:/app/prisma
+      - ./apps/api/nest-cli.json:/app/nest-cli.json
+      - ./apps/api/tsconfig.json:/app/tsconfig.json
+      # Named volume — node_modules stays inside Docker, never touched by host
+      # This is the critical fix for Windows. macOS and Linux benefit too.
+      - api_node_modules:/app/node_modules
+    networks: [parknest]
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: npm run dev
+      minio:
+        condition: service_healthy
+    # Run migrations then start the dev server
+    command: >
+      sh -c "npx prisma migrate dev --skip-seed && npm run dev"
 
+  # ── BullMQ Worker (hot reload) ───────────────────────────────────────────────
+  worker:
+    build:
+      context: ./apps/api
+      dockerfile: ../../docker/api.dev.Dockerfile
+    container_name: parknest_worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      <<: *common-env
+      DATABASE_URL: postgresql://${POSTGRES_USER:-parknest}:${POSTGRES_PASSWORD:-parknest_dev}@postgres:5432/${POSTGRES_DB:-parknest_db}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redisdev}
+      SMTP_HOST: mailhog
+      SMTP_PORT: "1025"
+    volumes:
+      - ./apps/api/src:/app/src
+      - ./apps/api/prisma:/app/prisma
+      - ./apps/api/nest-cli.json:/app/nest-cli.json
+      - ./apps/api/tsconfig.json:/app/tsconfig.json
+      - worker_node_modules:/app/node_modules
+    networks: [parknest]
+    depends_on:
+      api:
+        condition: service_healthy
+    command: >
+      sh -c "node -e \"require('./dist/worker')\" 2>/dev/null ||
+             npx ts-node -r tsconfig-paths/register src/worker.ts"
+
+  # ── Web (Next.js — hot reload) ────────────────────────────────────────────────
   web:
     build:
       context: ./apps/web
-      dockerfile: ../../docker/web.Dockerfile
-      target: development
-    container_name: parko_web
+      dockerfile: ../../docker/web.dev.Dockerfile
+    container_name: parknest_web
     restart: unless-stopped
-    env_file: .env
+    env_file:
+      - .env
     environment:
+      <<: *common-env
       NEXT_PUBLIC_API_URL: http://localhost:3001
+      # Internal URL used by Next.js SSR (server-side fetches go direct)
+      API_URL: http://api:3001
     ports:
       - "3000:3000"
     volumes:
-      - ./apps/web:/app
-      - /app/node_modules
-      - /app/.next
+      - ./apps/web/src:/app/src
+      - ./apps/web/public:/app/public
+      - ./apps/web/next.config.js:/app/next.config.js
+      - ./apps/web/tailwind.config.ts:/app/tailwind.config.ts
+      - ./apps/web/tsconfig.json:/app/tsconfig.json
+      - web_node_modules:/app/node_modules
+      # .next build cache in a named volume for faster rebuilds
+      - web_next_cache:/app/.next
+    networks: [parknest]
     depends_on:
-      - api
-    command: npm run dev
+      api:
+        condition: service_healthy
 
+# ─── Named Volumes ─────────────────────────────────────────────────────────────
 volumes:
   postgres_data:
   redis_data:
+  minio_data:
+  # node_modules live INSIDE Docker, never on host — fixes Windows path issues
+  api_node_modules:
+  worker_node_modules:
+  web_node_modules:
+  web_next_cache:
+
+# ─── Network ───────────────────────────────────────────────────────────────────
+networks:
+  parknest:
+    driver: bridge
+    name: parknest_dev

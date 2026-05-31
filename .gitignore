@@ -39,6 +39,16 @@ prisma/*.db
 # Docker
 docker/data/
 
+# Secrets — NEVER commit these
+secrets/
+*.secret
+.env.production
+.env.local
+.env.staging
+
+# Backups
+backups/
+
 # Misc
 *.tsbuildinfo
 .turbo/

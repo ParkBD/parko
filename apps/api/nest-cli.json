@@ -5,5 +5,19 @@
   "compilerOptions": {
     "deleteOutDir": true,
     "plugins": ["@nestjs/swagger"]
+  },
+  "projects": {
+    "api": {
+      "type": "application",
+      "root": "src",
+      "entryFile": "main",
+      "sourceRoot": "src"
+    },
+    "worker": {
+      "type": "application",
+      "root": "src",
+      "entryFile": "worker",
+      "sourceRoot": "src"
+    }
   }
 }
