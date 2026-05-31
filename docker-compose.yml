@@ -180,7 +180,7 @@ services:
         condition: service_healthy
     # Run migrations then start the dev server
     command: >
-      sh -c "npx prisma migrate dev --skip-seed && npm run dev"
+      sh -c "npx prisma migrate deploy && npm run dev"
 
   # ── BullMQ Worker (hot reload) ───────────────────────────────────────────────
   worker:

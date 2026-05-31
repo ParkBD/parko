@@ -9,7 +9,7 @@ WORKDIR /app
 RUN apk add --no-cache libc6-compat curl
 
 COPY package*.json ./
-RUN npm ci
+RUN npm install --legacy-peer-deps
 
 EXPOSE 3000
 
