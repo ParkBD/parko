@@ -27,6 +27,7 @@ import { ReviewsModule } from './modules/reviews/reviews.module';
 import { SearchModule } from './modules/search/search.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { GeoModule } from './modules/geo/geo.module';
 
 @Module({
   imports: [
@@ -49,6 +50,7 @@ import { AdminModule } from './modules/admin/admin.module';
     SearchModule,
     AnalyticsModule,
     AdminModule,
+    GeoModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: HttpExceptionFilter },

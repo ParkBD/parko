@@ -821,3 +821,13 @@ model AdminAction {
   @@index([createdAt])
   @@map("admin_actions")
 }
+
+model ParkingLotGeo {
+  id        String   @id @default(uuid()) @db.Uuid
+  lotId     String   @unique @db.Uuid
+  // boundary, entrances, exits stored as raw geometry via raw SQL (PostGIS)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("parking_lot_geo")
+}
