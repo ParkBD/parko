@@ -1,5 +1,15 @@
 import { Injectable, Inject } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import type { Redis } from 'ioredis';
+
+// Lua: atomically delete key only if value matches (prevents releasing someone else's lock)
+const RELEASE_LOCK_SCRIPT = `
+  if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("del", KEYS[1])
+  else
+    return 0
+  end
+`;
 
 @Injectable()
 export class RedisService {
@@ -63,5 +73,40 @@ export class RedisService {
 
   async publish(channel: string, message: string): Promise<void> {
     await this.redis.publish(channel, message);
+  }
+
+  /**
+   * Acquire a distributed lock. Returns a token to release with, or null if the
+   * lock is already held. ttlMs is the maximum hold time — always release early.
+   *
+   * Pattern: SET key token NX PX ttlMs
+   */
+  async acquireLock(key: string, ttlMs: number): Promise<string | null> {
+    const token = randomUUID();
+    const result = await this.redis.set(key, token, 'PX', ttlMs, 'NX');
+    return result === 'OK' ? token : null;
+  }
+
+  /**
+   * Release a lock acquired with acquireLock. Uses a Lua CAS script so we
+   * never delete a lock we don't own (e.g. after a timeout + re-acquisition).
+   */
+  async releaseLock(key: string, token: string): Promise<void> {
+    await this.redis.eval(RELEASE_LOCK_SCRIPT, 1, key, token);
+  }
+
+  /**
+   * Run fn while holding a distributed lock on key. Throws ConflictException if
+   * lock cannot be acquired within the first attempt. Always releases on exit.
+   */
+  async withLock<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promise<T> {
+    const { ConflictException } = await import('@nestjs/common');
+    const token = await this.acquireLock(key, ttlMs);
+    if (!token) throw new ConflictException('Resource is locked — please retry');
+    try {
+      return await fn();
+    } finally {
+      await this.releaseLock(key, token);
+    }
   }
 }

@@ -3,6 +3,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { BookingStatus, RoleType } from '@prisma/client';
 import { BookingService } from './booking.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
+import { ConfirmPaymentDto } from './dto/confirm-payment.dto';
 import { CurrentUser } from '@common/decorators/current-user.decorator';
 import { Roles } from '@common/decorators/roles.decorator';
 
@@ -10,18 +11,44 @@ import { Roles } from '@common/decorators/roles.decorator';
 @ApiBearerAuth()
 @Controller('bookings')
 export class BookingController {
-  constructor(private bookingService: BookingService) {}
+  constructor(private readonly bookingService: BookingService) {}
+
+  // ── Driver ──────────────────────────────────────────────────────────────────
 
   @Roles(RoleType.DRIVER)
   @Post()
-  @ApiOperation({ summary: 'Create booking' })
+  @ApiOperation({ summary: 'Create booking (→ PENDING)' })
   createBooking(@CurrentUser('id') driverId: string, @Body() dto: CreateBookingDto) {
     return this.bookingService.createBooking(driverId, dto);
   }
 
   @Roles(RoleType.DRIVER)
+  @Post(':id/reserve')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Confirm payment (PENDING → RESERVED)' })
+  confirmPayment(
+    @Param('id') id: string,
+    @CurrentUser('id') driverId: string,
+    @Body() dto: ConfirmPaymentDto,
+  ) {
+    return this.bookingService.confirmPayment(id, driverId, dto);
+  }
+
+  @Roles(RoleType.DRIVER)
+  @Patch(':id/cancel')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Cancel booking (PENDING|RESERVED|ARRIVED → CANCELLED)' })
+  cancelBooking(
+    @Param('id') id: string,
+    @CurrentUser('id') userId: string,
+    @Body() body: { reason?: string },
+  ) {
+    return this.bookingService.cancelBooking(id, userId, body.reason);
+  }
+
+  @Roles(RoleType.DRIVER)
   @Get()
-  @ApiOperation({ summary: 'Get my bookings' })
+  @ApiOperation({ summary: 'My bookings' })
   getBookings(
     @CurrentUser('id') driverId: string,
     @Query('page') page = 1,
@@ -33,7 +60,7 @@ export class BookingController {
 
   @Roles(RoleType.OWNER)
   @Get('owner')
-  @ApiOperation({ summary: 'Get bookings for my spaces' })
+  @ApiOperation({ summary: 'Bookings for my spaces' })
   getOwnerBookings(
     @CurrentUser('id') ownerId: string,
     @Query('page') page = 1,
@@ -44,40 +71,38 @@ export class BookingController {
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Get booking by ID' })
+  @ApiOperation({ summary: 'Get booking detail' })
   getBooking(@Param('id') id: string, @CurrentUser() user: any) {
     return this.bookingService.getBooking(id, user);
   }
 
-  @Roles(RoleType.DRIVER)
-  @Patch(':id/cancel')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Cancel booking' })
-  cancelBooking(
-    @Param('id') id: string,
-    @CurrentUser('id') userId: string,
-    @Body() body: { reason?: string },
-  ) {
-    return this.bookingService.cancelBooking(id, userId, body.reason);
-  }
+  // ── Security / Admin ────────────────────────────────────────────────────────
 
   @Roles(RoleType.SECURITY, RoleType.ADMIN)
-  @Post(':id/checkin')
+  @Post(':id/arrive')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Check in driver' })
-  checkIn(
+  @ApiOperation({ summary: 'Verify driver arrival code (RESERVED → ARRIVED)' })
+  markArrived(
     @Param('id') bookingId: string,
     @CurrentUser('id') securityId: string,
     @Body() body: { code: string },
   ) {
-    return this.bookingService.checkIn(bookingId, body.code, securityId);
+    return this.bookingService.markArrived(bookingId, body.code, securityId);
   }
 
   @Roles(RoleType.SECURITY, RoleType.ADMIN)
-  @Post(':id/checkout')
+  @Post(':id/start')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Check out driver' })
-  checkOut(@Param('id') bookingId: string, @CurrentUser('id') securityId: string) {
-    return this.bookingService.checkOut(bookingId, securityId);
+  @ApiOperation({ summary: 'Start parking session (ARRIVED → ACTIVE)' })
+  startSession(@Param('id') bookingId: string, @CurrentUser('id') securityId: string) {
+    return this.bookingService.startSession(bookingId, securityId);
+  }
+
+  @Roles(RoleType.SECURITY, RoleType.ADMIN)
+  @Post(':id/complete')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'End session and settle payment (ACTIVE → COMPLETED)' })
+  completeSession(@Param('id') bookingId: string, @CurrentUser('id') securityId: string) {
+    return this.bookingService.completeSession(bookingId, securityId);
   }
 }

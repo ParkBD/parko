@@ -65,6 +65,10 @@ enum WalletTransactionType {
   BOOKING_PAYMENT
   PAYOUT
   ADJUSTMENT
+  TOP_UP
+  ESCROW_HOLD
+  ESCROW_RELEASE
+  COMMISSION
 }
 
 enum WalletTransactionStatus {
@@ -80,6 +84,29 @@ enum CoinPackage {
   STANDARD
   PREMIUM
   ENTERPRISE
+}
+
+enum EscrowStatus {
+  HELD
+  RELEASED
+  REFUNDED
+  DISPUTED
+}
+
+enum WithdrawalStatus {
+  PENDING
+  APPROVED
+  PROCESSING
+  COMPLETED
+  REJECTED
+}
+
+enum PaymentGatewayStatus {
+  INITIATED
+  SUCCESS
+  FAILED
+  CANCELLED
+  REFUNDED
 }
 
 enum ParkingSpaceStatus {
@@ -125,14 +152,13 @@ enum DayOfWeek {
 }
 
 enum BookingStatus {
-  PENDING
-  CONFIRMED
-  CHECKED_IN
-  CHECKED_OUT
-  COMPLETED
-  CANCELLED
-  NO_SHOW
-  DISPUTED
+  PENDING    // Created, awaiting payment (10-min window)
+  RESERVED   // Payment confirmed, slot locked
+  ARRIVED    // Driver physically at the lot
+  ACTIVE     // Vehicle actively parked
+  COMPLETED  // Session finished, payment settled
+  CANCELLED  // Cancelled by driver or admin
+  EXPIRED    // Timed out (no payment or no arrival)
 }
 
 enum PaymentMethod {
@@ -162,6 +188,7 @@ enum VerificationCodeType {
   CHECK_OUT
   TWO_FACTOR
   WITHDRAWAL
+  SECURITY_VERIFY  // Magic-link token sent to security staff (no account needed)
 }
 
 enum PayoutStatus {
@@ -230,12 +257,21 @@ enum AdminActionType {
   UNSUSPEND_USER
   BAN_USER
   UNBAN_USER
+  FLAG_USER
   PROCESS_PAYOUT
   CANCEL_BOOKING
+  FORCE_CANCEL_BOOKING
   ISSUE_REFUND
   ADJUST_WALLET
+  FREEZE_WALLET
+  UNFREEZE_WALLET
+  ADJUST_WALLET_BALANCE
   SEND_NOTIFICATION
   EXPORT_DATA
+  RESOLVE_DISPUTE
+  CLOSE_DISPUTE
+  ASSIGN_ROLE
+  REVOKE_ROLE
 }
 
 // ─── Roles ────────────────────────────────────────────────────────────────────
@@ -283,6 +319,14 @@ model User {
   auditSubjectLogs  AuditLog[]           @relation("AuditSubject")
   auditActorLogs    AuditLog[]           @relation("AuditActor")
   adminActions      AdminAction[]
+  escrowsAsDriver      Escrow[]             @relation("EscrowDriver")
+  escrowsAsOwner       Escrow[]             @relation("EscrowOwner")
+  withdrawalRequests   WithdrawalRequest[]  @relation("WithdrawalOwner")
+  withdrawalReviews    WithdrawalRequest[]  @relation("WithdrawalReviewer")
+  paymentGatewayTxns   PaymentGatewayTxn[]
+  raisedDisputes       Dispute[]            @relation("DisputeRaiser")
+  assignedDisputes     Dispute[]            @relation("DisputeAssignee")
+  disputeNotes         DisputeNote[]
 
   @@index([email])
   @@index([phone])
@@ -344,24 +388,28 @@ model Profile {
 // ─── Wallets ──────────────────────────────────────────────────────────────────
 
 model Wallet {
-  id             String    @id @default(uuid()) @db.Uuid
-  userId         String    @unique @db.Uuid
-  balance        Decimal   @default(0) @db.Decimal(12, 2)
-  coinBalance    Int       @default(0)
-  totalEarned    Decimal   @default(0) @db.Decimal(12, 2)
-  totalSpent     Decimal   @default(0) @db.Decimal(12, 2)
-  totalWithdrawn Decimal   @default(0) @db.Decimal(12, 2)
-  currency       String    @default("BDT")
-  isActive       Boolean   @default(true)
-  frozenAt       DateTime?
-  frozenReason   String?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  id              String    @id @default(uuid()) @db.Uuid
+  userId          String    @unique @db.Uuid
+  balance         Decimal   @default(0) @db.Decimal(12, 2)
+  coinBalance     Int       @default(0)
+  escrowBalance   Int       @default(0)
+  pendingWithdraw Int       @default(0)
+  totalEarned     Decimal   @default(0) @db.Decimal(12, 2)
+  totalSpent      Decimal   @default(0) @db.Decimal(12, 2)
+  totalWithdrawn  Decimal   @default(0) @db.Decimal(12, 2)
+  currency        String    @default("BDT")
+  isActive        Boolean   @default(true)
+  frozenAt        DateTime?
+  frozenReason    String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  user          User                @relation(fields: [userId], references: [id], onDelete: Restrict)
-  transactions  WalletTransaction[]
-  coinPurchases CoinPurchase[]
-  payouts       OwnerPayout[]
+  user               User                @relation(fields: [userId], references: [id], onDelete: Restrict)
+  transactions       WalletTransaction[]
+  coinPurchases      CoinPurchase[]
+  payouts            OwnerPayout[]
+  paymentGatewayTxns PaymentGatewayTxn[]
+  withdrawalRequests WithdrawalRequest[]
 
   @@index([userId])
   @@map("wallets")
@@ -565,8 +613,6 @@ model Booking {
   status             BookingStatus  @default(PENDING)
   startTime          DateTime
   endTime            DateTime
-  actualStartTime    DateTime?
-  actualEndTime      DateTime?
   vehicleNumber      String
   vehicleType        VehicleType    @default(CAR)
   baseAmount         Decimal        @db.Decimal(10, 2)
@@ -576,17 +622,28 @@ model Booking {
   coinDiscount       Decimal        @default(0) @db.Decimal(10, 2)
   paymentStatus      PaymentStatus  @default(PENDING)
   paymentMethod      PaymentMethod?
-  checkInCode        String?
-  checkOutCode       String?
-  checkedInAt        DateTime?
-  checkedOutAt       DateTime?
-  checkedInBy        String?        @db.Uuid
-  checkedOutBy       String?        @db.Uuid
+
+  // Verification codes
+  arrivalCode        String?        // 6-digit code for ARRIVED transition
+  exitCode           String?        // 6-digit code for COMPLETED transition
+
+  // Timestamps per state
+  reservedAt         DateTime?      // PENDING → RESERVED
+  reservationExpiresAt DateTime?    // when RESERVED expires if driver doesn't arrive
+  arrivedAt          DateTime?      // RESERVED → ARRIVED
+  arrivedBy          String?        @db.Uuid
+  sessionStartedAt   DateTime?      // ARRIVED → ACTIVE
+  sessionStartedBy   String?        @db.Uuid
+  sessionEndedAt     DateTime?      // ACTIVE → COMPLETED
+  sessionEndedBy     String?        @db.Uuid
+  expiredAt          DateTime?
+  expiryReason       String?        // NO_PAYMENT | NO_ARRIVAL
+
+  // Cancellation
   cancellationReason String?
   cancelledAt        DateTime?
   cancelledBy        String?        @db.Uuid
-  disputeReason      String?
-  disputedAt         DateTime?
+
   notes              String?
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
@@ -597,6 +654,8 @@ model Booking {
   statusHistory     BookingStatusHistory[]
   verificationCodes VerificationCode[]
   review            Review?
+  escrow            Escrow?
+  disputes          Dispute[]
 
   @@index([driverId])
   @@index([spaceId])
@@ -605,6 +664,7 @@ model Booking {
   @@index([startTime, endTime])
   @@index([bookingRef])
   @@index([deletedAt])
+  @@index([reservationExpiresAt])
   @@map("bookings")
 }
 
@@ -822,12 +882,154 @@ model AdminAction {
   @@map("admin_actions")
 }
 
+// ─── Disputes ─────────────────────────────────────────────────────────────────
+
+enum DisputeStatus {
+  OPEN
+  INVESTIGATING
+  RESOLVED
+  DISMISSED
+}
+
+enum DisputeType {
+  OVERCHARGE
+  NO_SHOW
+  SPACE_UNAVAILABLE
+  SAFETY_CONCERN
+  FRAUDULENT_BOOKING
+  PAYMENT_ISSUE
+  OTHER
+}
+
+model Dispute {
+  id           String        @id @default(uuid()) @db.Uuid
+  bookingId    String        @db.Uuid
+  raisedBy     String        @db.Uuid  // User who raised it
+  assignedTo   String?       @db.Uuid  // Admin assigned to investigate
+  status       DisputeStatus @default(OPEN)
+  type         DisputeType
+  description  String
+  resolution   String?
+  refundAmount Decimal?      @db.Decimal(10, 2)
+  refundIssued Boolean       @default(false)
+  openedAt     DateTime      @default(now())
+  resolvedAt   DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  booking    Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  raiser     User    @relation("DisputeRaiser", fields: [raisedBy], references: [id], onDelete: Restrict)
+  assignee   User?   @relation("DisputeAssignee", fields: [assignedTo], references: [id], onDelete: SetNull)
+  notes      DisputeNote[]
+
+  @@index([bookingId])
+  @@index([raisedBy])
+  @@index([status])
+  @@index([assignedTo])
+  @@index([createdAt])
+  @@map("disputes")
+}
+
+model DisputeNote {
+  id         String   @id @default(uuid()) @db.Uuid
+  disputeId  String   @db.Uuid
+  authorId   String   @db.Uuid
+  body       String
+  createdAt  DateTime @default(now())
+
+  dispute Dispute @relation(fields: [disputeId], references: [id], onDelete: Cascade)
+  author  User    @relation(fields: [authorId], references: [id], onDelete: Restrict)
+
+  @@index([disputeId])
+  @@map("dispute_notes")
+}
+
 model ParkingLotGeo {
-  id        String   @id @default(uuid()) @db.Uuid
-  lotId     String   @unique @db.Uuid
   // boundary, entrances, exits stored as raw geometry via raw SQL (PostGIS)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@map("parking_lot_geo")
+}
+
+// ─── Payment Gateway Transactions ─────────────────────────────────────────────
+
+model PaymentGatewayTxn {
+  id            String               @id @default(uuid()) @db.Uuid
+  userId        String               @db.Uuid
+  walletId      String               @db.Uuid
+  amount        Decimal              @db.Decimal(10, 2)
+  coinsToCredit Int
+  status        PaymentGatewayStatus @default(INITIATED)
+  tranId        String               @unique
+  sessionKey    String?
+  valId         String?
+  bankTranId    String?
+  cardType      String?
+  ipnPayload    Json?
+  failReason    String?
+  initiatedAt   DateTime             @default(now())
+  completedAt   DateTime?
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  @@index([userId])
+  @@index([status])
+  @@index([tranId])
+  @@map("payment_gateway_txns")
+}
+
+// ─── Escrow ───────────────────────────────────────────────────────────────────
+
+model Escrow {
+  id            String       @id @default(uuid()) @db.Uuid
+  bookingId     String       @unique @db.Uuid
+  driverId      String       @db.Uuid
+  ownerId       String       @db.Uuid
+  totalCoins    Int
+  platformFee   Int
+  ownerEarnings Int
+  refundedCoins Int          @default(0)
+  status        EscrowStatus @default(HELD)
+  heldAt        DateTime     @default(now())
+  releasedAt    DateTime?
+  refundedAt    DateTime?
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  driver  User    @relation("EscrowDriver", fields: [driverId], references: [id], onDelete: Restrict)
+  owner   User    @relation("EscrowOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+
+  @@index([driverId])
+  @@index([ownerId])
+  @@index([status])
+  @@map("escrows")
+}
+
+// ─── Withdrawal Requests ──────────────────────────────────────────────────────
+
+model WithdrawalRequest {
+  id              String           @id @default(uuid()) @db.Uuid
+  userId          String           @db.Uuid
+  walletId        String           @db.Uuid
+  amount          Int
+  status          WithdrawalStatus @default(PENDING)
+  method          String
+  accountDetails  Json
+  adminNote       String?
+  rejectionReason String?
+  reviewedBy      String?          @db.Uuid
+  processedAt     DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  user     User   @relation("WithdrawalOwner", fields: [userId], references: [id], onDelete: Restrict)
+  wallet   Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+  reviewer User?  @relation("WithdrawalReviewer", fields: [reviewedBy], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("withdrawal_requests")
 }

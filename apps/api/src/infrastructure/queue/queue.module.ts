@@ -8,6 +8,7 @@ export const QUEUES = {
   PAYMENT: 'payment',
   ANALYTICS: 'analytics',
   WITHDRAWAL: 'withdrawal',
+  BOOKING: 'booking',
 } as const;
 
 @Module({
@@ -35,6 +36,7 @@ export const QUEUES = {
       { name: QUEUES.PAYMENT },
       { name: QUEUES.ANALYTICS },
       { name: QUEUES.WITHDRAWAL },
+      { name: QUEUES.BOOKING },
     ),
   ],
   exports: [BullModule],
