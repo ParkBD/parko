@@ -1,18 +1,13 @@
 import { Module } from '@nestjs/common';
-import { BullModule } from '@nestjs/bullmq';
 import { BookingService } from './booking.service';
 import { BookingController } from './booking.controller';
-import { QUEUES } from '@infrastructure/queue/queue.module';
+import { WalletModule } from '@modules/wallet/wallet.module';
+import { QueueModule } from '@infrastructure/queue/queue.module';
 
 @Module({
-  imports: [
-    BullModule.registerQueue(
-      { name: QUEUES.NOTIFICATION },
-      { name: QUEUES.ANALYTICS },
-    ),
-  ],
-  providers: [BookingService],
+  imports: [WalletModule, QueueModule],
   controllers: [BookingController],
+  providers: [BookingService],
   exports: [BookingService],
 })
 export class BookingModule {}

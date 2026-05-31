@@ -1,17 +1,13 @@
-import {
-  Injectable,
-  BadRequestException,
-  NotFoundException,
-  ForbiddenException,
-} from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import { BookingStatus, RoleType } from '@prisma/client';
 import { PrismaService } from '@infrastructure/prisma/prisma.service';
-import { RedisService } from '@infrastructure/redis/redis.service';
+import { WalletService } from '@modules/wallet/wallet.service';
 import { QUEUES } from '@infrastructure/queue/queue.module';
 import { CreateBookingDto } from './dto/create-booking.dto';
 
-function generateVerificationCode(): string {
+function generateCode(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
@@ -19,178 +15,192 @@ function generateVerificationCode(): string {
 export class BookingService {
   constructor(
     private prisma: PrismaService,
-    private redis: RedisService,
-    @InjectQueue(QUEUES.NOTIFICATION) private notificationQueue: Queue,
+    private walletService: WalletService,
+    @InjectQueue(QUEUES.NOTIFICATION) private notifQueue: Queue,
     @InjectQueue(QUEUES.ANALYTICS) private analyticsQueue: Queue,
   ) {}
 
+  private serializeBooking(b: any) {
+    return {
+      ...b,
+      baseAmount: b.baseAmount?.toNumber?.() ?? b.baseAmount,
+      discountAmount: b.discountAmount?.toNumber?.() ?? b.discountAmount,
+      totalAmount: b.totalAmount?.toNumber?.() ?? b.totalAmount,
+      coinDiscount: b.coinDiscount?.toNumber?.() ?? b.coinDiscount,
+    };
+  }
+
   async createBooking(driverId: string, dto: CreateBookingDto) {
-    const startTime = new Date(dto.startTime);
-    const endTime = new Date(dto.endTime);
+    const start = new Date(dto.startTime);
+    const end = new Date(dto.endTime);
+    if (start <= new Date()) throw new BadRequestException('Start time must be in the future');
+    if (end <= start) throw new BadRequestException('End time must be after start time');
 
-    if (endTime <= startTime) throw new BadRequestException('End time must be after start time');
+    const space = await this.prisma.parkingSpace.findFirst({
+      where: { id: dto.spaceId, status: 'ACTIVE', deletedAt: null },
+    });
+    if (!space) throw new NotFoundException('Parking space not available');
+    if (space.availableSlots <= 0) throw new BadRequestException('No available slots');
 
-    const conflict = await this.prisma.booking.findFirst({
+    // Overlap check
+    const overlap = await this.prisma.booking.count({
       where: {
-        slotId: dto.slotId,
-        status: { in: ['PENDING', 'CONFIRMED', 'ACTIVE'] },
-        startTime: { lt: endTime },
-        endTime: { gt: startTime },
+        spaceId: dto.spaceId, deletedAt: null,
+        status: { in: [BookingStatus.CONFIRMED, BookingStatus.CHECKED_IN] },
+        AND: [{ startTime: { lt: end } }, { endTime: { gt: start } }],
       },
     });
+    if (overlap >= space.totalSlots) throw new BadRequestException('Time slot fully booked');
 
-    if (conflict) throw new BadRequestException('Slot is not available for this time range');
+    const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+    const baseAmount = parseFloat((hours * space.pricePerHour.toNumber()).toFixed(2));
+    const coinsUsed = Math.min(dto.coinsToUse ?? 0, Math.floor(baseAmount * 0.2));
+    const coinDiscount = coinsUsed;
+    const totalAmount = parseFloat((baseAmount - coinDiscount).toFixed(2));
 
-    const lot = await this.prisma.parkingLot.findUnique({ where: { id: dto.lotId } });
-    if (!lot || lot.status !== 'ACTIVE') throw new NotFoundException('Parking lot not available');
+    return this.prisma.$transaction(async (tx) => {
+      // Deduct wallet/coins if needed
+      if (dto.paymentMethod === 'WALLET' || dto.paymentMethod === 'COINS') {
+        await this.walletService.debitWallet(driverId, totalAmount, 'BOOKING_PAYMENT', {
+          description: `Booking payment`, referenceType: 'booking',
+        });
+      }
+      if (coinsUsed > 0) {
+        await tx.wallet.update({ where: { userId: driverId }, data: { coinBalance: { decrement: coinsUsed } } });
+      }
 
-    const hours = (endTime.getTime() - startTime.getTime()) / (1000 * 60 * 60);
-    const totalAmount = Math.ceil(hours * lot.pricePerHour);
+      const booking = await tx.booking.create({
+        data: {
+          driverId, spaceId: dto.spaceId, status: BookingStatus.CONFIRMED,
+          startTime: start, endTime: end,
+          vehicleNumber: dto.vehicleNumber, vehicleType: dto.vehicleType,
+          baseAmount, discountAmount: 0, totalAmount, coinsUsed, coinDiscount,
+          paymentStatus: 'COMPLETED', paymentMethod: dto.paymentMethod,
+          notes: dto.notes,
+        },
+      });
 
-    const checkInCode = generateVerificationCode();
-    const checkOutCode = generateVerificationCode();
+      await tx.parkingSpace.update({ where: { id: dto.spaceId }, data: { availableSlots: { decrement: 1 } } });
 
-    const booking = await this.prisma.booking.create({
-      data: {
-        driverId,
-        lotId: dto.lotId,
-        slotId: dto.slotId,
-        startTime,
-        endTime,
-        vehicleNumber: dto.vehicleNumber,
-        vehicleType: dto.vehicleType ?? 'CAR',
-        totalAmount,
-        coinsUsed: dto.coinsToUse ?? 0,
-        checkInCode,
-        checkOutCode,
-        status: 'PENDING',
-      },
-      include: {
-        lot: { select: { name: true, address: true } },
-        slot: { select: { slotNumber: true } },
-      },
+      await tx.bookingStatusHistory.create({ data: { bookingId: booking.id, fromStatus: null, toStatus: BookingStatus.CONFIRMED } });
+
+      const checkInCode = generateCode();
+      const codeExpiry = new Date(end.getTime() + 60 * 60 * 1000);
+      await tx.verificationCode.create({
+        data: { userId: driverId, bookingId: booking.id, type: 'CHECK_IN', code: checkInCode, expiresAt: codeExpiry },
+      });
+
+      await tx.booking.update({ where: { id: booking.id }, data: { checkInCode } });
+
+      await this.notifQueue.add('notification.booking', { type: 'BOOKING_CONFIRMED', bookingId: booking.id, userId: driverId });
+
+      return this.serializeBooking(booking);
     });
+  }
 
-    // Cache verification codes in Redis for quick lookup
-    await Promise.all([
-      this.redis.set(`booking:checkin:${checkInCode}`, booking.id, 86400 * 7),
-      this.redis.set(`booking:checkout:${checkOutCode}`, booking.id, 86400 * 7),
+  async getBookings(driverId: string, page = 1, limit = 20, status?: BookingStatus) {
+    const skip = (page - 1) * limit;
+    const where: any = { driverId, deletedAt: null };
+    if (status) where.status = status;
+    const [data, total] = await Promise.all([
+      this.prisma.booking.findMany({ where, skip, take: limit, orderBy: { createdAt: 'desc' }, include: { space: { select: { name: true, addressLine1: true, city: true } } } }),
+      this.prisma.booking.count({ where }),
     ]);
-
-    await this.notificationQueue.add('booking.created', {
-      bookingId: booking.id,
-      driverId,
-      lotName: booking.lot.name,
-      checkInCode,
-    });
-
-    return booking;
+    return { data: data.map(this.serializeBooking), total, page, limit };
   }
 
-  async confirmBooking(bookingId: string) {
-    return this.prisma.booking.update({
-      where: { id: bookingId },
-      data: { status: 'CONFIRMED' },
-    });
+  async getOwnerBookings(ownerId: string, page = 1, limit = 20, status?: BookingStatus) {
+    const skip = (page - 1) * limit;
+    const where: any = { space: { ownerId }, deletedAt: null };
+    if (status) where.status = status;
+    const [data, total] = await Promise.all([
+      this.prisma.booking.findMany({ where, skip, take: limit, orderBy: { createdAt: 'desc' }, include: { space: { select: { name: true, city: true } }, driver: { select: { email: true, profile: { select: { firstName: true, lastName: true } } } } } }),
+      this.prisma.booking.count({ where }),
+    ]);
+    return { data: data.map(this.serializeBooking), total, page, limit };
   }
 
-  async checkIn(code: string, securityId: string) {
-    const bookingId = await this.redis.get(`booking:checkin:${code}`);
-    if (!bookingId) throw new BadRequestException('Invalid or expired check-in code');
-
-    const booking = await this.prisma.booking.findUnique({ where: { id: bookingId } });
-    if (!booking) throw new NotFoundException('Booking not found');
-    if (booking.status !== 'CONFIRMED') throw new BadRequestException('Booking not confirmed');
-
-    const updated = await this.prisma.booking.update({
-      where: { id: bookingId },
-      data: {
-        status: 'ACTIVE',
-        actualStartTime: new Date(),
-        checkedInAt: new Date(),
-        checkedInBy: securityId,
-      },
-    });
-
-    await this.redis.del(`booking:checkin:${code}`);
-    return updated;
-  }
-
-  async checkOut(code: string, securityId: string) {
-    const bookingId = await this.redis.get(`booking:checkout:${code}`);
-    if (!bookingId) throw new BadRequestException('Invalid or expired check-out code');
-
-    const booking = await this.prisma.booking.findUnique({
-      where: { id: bookingId },
-      include: { lot: { select: { ownerId: true } } },
+  async getBooking(id: string, user: { id: string; roles: RoleType[] }) {
+    const booking = await this.prisma.booking.findFirst({
+      where: { id, deletedAt: null },
+      include: { space: { select: { ownerId: true, name: true, addressLine1: true, city: true } }, statusHistory: { orderBy: { createdAt: 'asc' } } },
     });
     if (!booking) throw new NotFoundException('Booking not found');
-    if (booking.status !== 'ACTIVE') throw new BadRequestException('Booking not active');
-
-    const updated = await this.prisma.booking.update({
-      where: { id: bookingId },
-      data: {
-        status: 'COMPLETED',
-        actualEndTime: new Date(),
-        checkedOutAt: new Date(),
-        checkedOutBy: securityId,
-      },
-    });
-
-    await this.redis.del(`booking:checkout:${code}`);
-
-    await this.analyticsQueue.add('booking.completed', {
-      bookingId,
-      lotId: booking.lotId,
-      ownerId: booking.lot.ownerId,
-      amount: booking.totalAmount,
-    });
-
-    return updated;
+    const isAdmin = user.roles.includes(RoleType.ADMIN) || user.roles.includes(RoleType.SUPER_ADMIN);
+    const isDriver = booking.driverId === user.id;
+    const isOwner = booking.space.ownerId === user.id;
+    if (!isAdmin && !isDriver && !isOwner) throw new ForbiddenException();
+    return this.serializeBooking(booking);
   }
 
-  async cancelBooking(bookingId: string, userId: string, reason?: string) {
-    const booking = await this.prisma.booking.findUnique({ where: { id: bookingId } });
-    if (!booking) throw new NotFoundException('Booking not found');
+  async cancelBooking(id: string, userId: string, reason?: string) {
+    const booking = await this.prisma.booking.findFirst({ where: { id, deletedAt: null } });
+    if (!booking) throw new NotFoundException();
     if (booking.driverId !== userId) throw new ForbiddenException();
-    if (!['PENDING', 'CONFIRMED'].includes(booking.status)) {
-      throw new BadRequestException('Cannot cancel an active or completed booking');
+    if (!([BookingStatus.PENDING, BookingStatus.CONFIRMED] as BookingStatus[]).includes(booking.status)) {
+      throw new BadRequestException('Cannot cancel a booking in this state');
     }
 
-    return this.prisma.booking.update({
-      where: { id: bookingId },
-      data: { status: 'CANCELLED', cancellationReason: reason },
+    await this.prisma.$transaction(async (tx) => {
+      await tx.booking.update({ where: { id }, data: { status: BookingStatus.CANCELLED, cancellationReason: reason, cancelledAt: new Date(), cancelledBy: userId } });
+      await tx.parkingSpace.update({ where: { id: booking.spaceId }, data: { availableSlots: { increment: 1 } } });
+      await tx.bookingStatusHistory.create({ data: { bookingId: id, fromStatus: booking.status, toStatus: BookingStatus.CANCELLED, changedBy: userId, reason } });
     });
+
+    // Refund wallet if paid
+    if (booking.paymentMethod === 'WALLET' || booking.paymentMethod === 'COINS') {
+      await this.walletService.creditWallet(userId, booking.totalAmount.toNumber(), 'REFUND', { description: 'Booking cancellation refund', referenceType: 'booking', referenceId: id });
+    }
+
+    await this.notifQueue.add('notification.booking', { type: 'BOOKING_CANCELLED', bookingId: id, userId });
+    return { success: true };
   }
 
-  async getDriverBookings(driverId: string, page: number, limit: number) {
-    const [data, total] = await Promise.all([
-      this.prisma.booking.findMany({
-        where: { driverId },
-        skip: (page - 1) * limit,
-        take: limit,
-        include: { lot: { select: { name: true, address: true } }, slot: true },
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.prisma.booking.count({ where: { driverId } }),
-    ]);
-    return { data, total };
+  async checkIn(bookingId: string, code: string, securityUserId: string) {
+    const booking = await this.prisma.booking.findFirst({ where: { id: bookingId, deletedAt: null } });
+    if (!booking) throw new NotFoundException();
+    if (booking.status !== BookingStatus.CONFIRMED) throw new BadRequestException('Booking is not confirmed');
+
+    const vc = await this.prisma.verificationCode.findFirst({
+      where: { bookingId, type: 'CHECK_IN', isUsed: false, expiresAt: { gt: new Date() } },
+    });
+    if (!vc) throw new BadRequestException('No valid check-in code found');
+    if (vc.attempts >= vc.maxAttempts) throw new BadRequestException('Max attempts reached');
+    if (vc.code !== code) {
+      await this.prisma.verificationCode.update({ where: { id: vc.id }, data: { attempts: { increment: 1 } } });
+      throw new BadRequestException('Invalid code');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.booking.update({ where: { id: bookingId }, data: { status: BookingStatus.CHECKED_IN, checkedInAt: new Date(), checkedInBy: securityUserId } });
+      await tx.verificationCode.update({ where: { id: vc.id }, data: { isUsed: true, usedAt: new Date() } });
+      await tx.bookingStatusHistory.create({ data: { bookingId, fromStatus: BookingStatus.CONFIRMED, toStatus: BookingStatus.CHECKED_IN, changedBy: securityUserId } });
+    });
+
+    return { success: true, checkedInAt: new Date() };
   }
 
-  async getLotBookings(lotId: string, ownerId: string, page: number, limit: number) {
-    const lot = await this.prisma.parkingLot.findUnique({ where: { id: lotId } });
-    if (!lot || lot.ownerId !== ownerId) throw new ForbiddenException();
+  async checkOut(bookingId: string, securityUserId: string) {
+    const booking = await this.prisma.booking.findFirst({
+      where: { id: bookingId, deletedAt: null },
+      include: { space: { select: { ownerId: true, pricePerHour: true } } },
+    });
+    if (!booking) throw new NotFoundException();
+    if (booking.status !== BookingStatus.CHECKED_IN) throw new BadRequestException('Booking is not checked in');
 
-    const [data, total] = await Promise.all([
-      this.prisma.booking.findMany({
-        where: { lotId },
-        skip: (page - 1) * limit,
-        take: limit,
-        include: { driver: { select: { firstName: true, lastName: true, phone: true } }, slot: true },
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.prisma.booking.count({ where: { lotId } }),
-    ]);
-    return { data, total };
+    const now = new Date();
+    const hours = (now.getTime() - booking.checkedInAt!.getTime()) / (1000 * 60 * 60);
+    const ownerEarnings = parseFloat((hours * booking.space.pricePerHour.toNumber() * 0.85).toFixed(2));
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.booking.update({ where: { id: bookingId }, data: { status: BookingStatus.COMPLETED, checkedOutAt: now, checkedOutBy: securityUserId, actualEndTime: now } });
+      await tx.parkingSpace.update({ where: { id: booking.spaceId }, data: { availableSlots: { increment: 1 } } });
+      await tx.bookingStatusHistory.create({ data: { bookingId, fromStatus: BookingStatus.CHECKED_IN, toStatus: BookingStatus.COMPLETED, changedBy: securityUserId } });
+    });
+
+    await this.walletService.creditWallet(booking.space.ownerId, ownerEarnings, 'CREDIT', { description: 'Booking earnings', referenceType: 'booking', referenceId: bookingId });
+    await this.analyticsQueue.add('analytics.event', { event: 'booking.completed', spaceId: booking.spaceId, amount: ownerEarnings });
+
+    return { success: true, checkedOutAt: now };
   }
 }

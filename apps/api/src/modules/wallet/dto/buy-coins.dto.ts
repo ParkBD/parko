@@ -1,5 +1,5 @@
-import { IsEnum } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
+import { IsEnum } from 'class-validator';
 import { CoinPackage, PaymentMethod } from '@prisma/client';
 
 export class BuyCoinsDto {

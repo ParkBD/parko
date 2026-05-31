@@ -1,38 +1,14 @@
-import { IsDateString, IsInt, IsNotEmpty, IsOptional, IsString, Min } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsDateString, IsEnum, IsInt, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import { PaymentMethod, VehicleType } from '@prisma/client';
 
 export class CreateBookingDto {
-  @ApiProperty()
-  @IsString()
-  @IsNotEmpty()
-  lotId: string;
-
-  @ApiProperty()
-  @IsString()
-  @IsNotEmpty()
-  slotId: string;
-
-  @ApiProperty()
-  @IsDateString()
-  startTime: string;
-
-  @ApiProperty()
-  @IsDateString()
-  endTime: string;
-
-  @ApiProperty({ example: 'DHA-1234' })
-  @IsString()
-  @IsNotEmpty()
-  vehicleNumber: string;
-
-  @ApiPropertyOptional({ example: 'CAR' })
-  @IsOptional()
-  @IsString()
-  vehicleType?: string;
-
-  @ApiPropertyOptional({ description: 'Coins to apply from wallet' })
-  @IsOptional()
-  @IsInt()
-  @Min(0)
-  coinsToUse?: number;
+  @ApiProperty() @IsUUID() spaceId: string;
+  @ApiProperty() @IsDateString() startTime: string;
+  @ApiProperty() @IsDateString() endTime: string;
+  @ApiProperty() @IsString() vehicleNumber: string;
+  @ApiProperty({ enum: VehicleType }) @IsEnum(VehicleType) vehicleType: VehicleType;
+  @ApiProperty({ enum: PaymentMethod }) @IsEnum(PaymentMethod) paymentMethod: PaymentMethod;
+  @ApiPropertyOptional({ default: 0 }) @IsOptional() @IsInt() @Min(0) coinsToUse?: number;
+  @ApiPropertyOptional() @IsOptional() @IsString() notes?: string;
 }

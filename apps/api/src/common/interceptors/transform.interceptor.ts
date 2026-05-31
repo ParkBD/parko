@@ -2,15 +2,9 @@ import { Injectable, NestInterceptor, ExecutionContext, CallHandler } from '@nes
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
 
-export interface ApiResponse<T> {
-  success: boolean;
-  data: T;
-  timestamp: string;
-}
-
 @Injectable()
-export class TransformInterceptor<T> implements NestInterceptor<T, ApiResponse<T>> {
-  intercept(_context: ExecutionContext, next: CallHandler): Observable<ApiResponse<T>> {
+export class TransformInterceptor implements NestInterceptor {
+  intercept(_context: ExecutionContext, next: CallHandler): Observable<any> {
     return next.handle().pipe(
       map((data) => ({
         success: true,
