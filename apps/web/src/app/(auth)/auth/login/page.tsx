@@ -15,18 +15,48 @@ const schema = z.object({
 })
 type FormData = z.infer<typeof schema>
 
+const DEMO_ACCOUNTS = [
+  { role: 'Admin',    email: 'admin@parknest.com',    password: 'Admin@1234' },
+  { role: 'Owner',    email: 'owner@parknest.com',    password: 'User@1234'  },
+  { role: 'Driver',   email: 'driver@parknest.com',   password: 'User@1234'  },
+  { role: 'Security', email: 'security@parknest.com', password: 'User@1234'  },
+] as const
+
 export default function LoginPage() {
-  const { register, handleSubmit, formState: { errors } } = useForm<FormData>({
+  const { register, handleSubmit, setValue, formState: { errors } } = useForm<FormData>({
     resolver: zodResolver(schema),
   })
   const login = useLogin()
+
+  const handleDemoLogin = (email: string, password: string) => {
+    setValue('email', email)
+    setValue('password', password)
+    login.mutate({ email, password })
+  }
 
   return (
     <div>
       <h1 className="text-xl font-semibold text-neutral-900">Sign in</h1>
       <p className="mt-1 text-sm text-neutral-500">Welcome back to Parko</p>
 
-      <form onSubmit={handleSubmit((d) => login.mutate(d))} className="mt-6 space-y-4">
+      <div className="mt-4 rounded-lg border border-dashed border-neutral-200 bg-neutral-50 p-3">
+        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-neutral-400">Demo accounts</p>
+        <div className="grid grid-cols-2 gap-2">
+          {DEMO_ACCOUNTS.map((a) => (
+            <button
+              key={a.role}
+              type="button"
+              onClick={() => handleDemoLogin(a.email, a.password)}
+              disabled={login.isPending}
+              className="rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-xs font-medium text-neutral-700 transition-colors hover:bg-neutral-100 disabled:opacity-50"
+            >
+              {a.role}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <form onSubmit={handleSubmit((d) => login.mutate(d))} className="mt-4 space-y-4">
         <div>
           <Label htmlFor="email">Email</Label>
           <Input id="email" type="email" placeholder="you@example.com" className="mt-1" {...register('email')} />

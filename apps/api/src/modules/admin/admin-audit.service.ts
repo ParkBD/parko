@@ -109,7 +109,7 @@ export class AdminAuditService {
 
     const timeline = [
       ...auditLogs.map((l) => ({ type: 'audit', source: 'system', ...l })),
-      ...adminActions.map((a) => ({ type: 'admin_action', source: 'admin', ...a })),
+      ...adminActions.map((a) => ({ ...a, type: 'admin_action', source: 'admin' })),
     ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
     return { entityType, entityId, timeline };

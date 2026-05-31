@@ -34,6 +34,6 @@ ENV CHOKIDAR_INTERVAL=300
 ENV WATCHPACK_POLLING=false
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=5 \
-  CMD curl -fs http://localhost:3001/health || exit 1
+  CMD curl -fs http://localhost:3001/api/docs || exit 1
 
 CMD ["npm", "run", "dev"]

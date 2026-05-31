@@ -48,7 +48,7 @@ export class AdminUserService {
           createdAt: true,
           profile: { select: { firstName: true, lastName: true, avatarUrl: true } },
           roles: { select: { role: { select: { name: true } } } },
-          wallet: { select: { balance: true, coinBalance: true, isFrozen: true } },
+          wallet: { select: { balance: true, coinBalance: true, frozenAt: true } },
           _count: { select: { driverBookings: true, raisedDisputes: true } },
         },
       }),
@@ -64,7 +64,7 @@ export class AdminUserService {
       include: {
         profile: true,
         roles: { include: { role: true } },
-        wallet: { select: { balance: true, coinBalance: true, isFrozen: true, frozenAt: true } },
+        wallet: { select: { balance: true, coinBalance: true, frozenAt: true } },
         driverBookings: {
           where: { deletedAt: null },
           orderBy: { createdAt: 'desc' },
