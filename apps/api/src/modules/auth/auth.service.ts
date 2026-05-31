@@ -7,10 +7,13 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
+import { RoleType } from '@prisma/client';
 import { PrismaService } from '@infrastructure/prisma/prisma.service';
 import { RedisService } from '@infrastructure/redis/redis.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+
+const REFRESH_TTL = 7 * 24 * 60 * 60; // 7 days in seconds
 
 @Injectable()
 export class AuthService {
@@ -18,7 +21,7 @@ export class AuthService {
     private prisma: PrismaService,
     private jwtService: JwtService,
     private configService: ConfigService,
-    private redisService: RedisService,
+    private redis: RedisService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -27,94 +30,133 @@ export class AuthService {
 
     const passwordHash = await bcrypt.hash(dto.password, 12);
 
+    const driverRole = await this.prisma.role.findUnique({ where: { name: RoleType.DRIVER } });
+    if (!driverRole) throw new NotFoundException('Role configuration missing — run seed');
+
     const user = await this.prisma.user.create({
       data: {
         email: dto.email,
-        firstName: dto.firstName,
-        lastName: dto.lastName,
-        passwordHash,
-        role: dto.role ?? 'DRIVER',
         phone: dto.phone,
+        passwordHash,
+        status: 'PENDING_VERIFICATION',
+        profile: {
+          create: {
+            firstName: dto.firstName,
+            lastName: dto.lastName,
+          },
+        },
         wallet: { create: {} },
+        roles: {
+          create: { roleId: driverRole.id },
+        },
       },
-      select: { id: true, email: true, role: true, firstName: true, lastName: true },
+      include: {
+        profile: true,
+        roles: { include: { role: true } },
+      },
     });
 
-    const tokens = await this.generateTokens(user.id, user.email, user.role);
-    await this.saveRefreshToken(user.id, tokens.refreshToken);
-
-    return { user, ...tokens };
-  }
-
-  async login(dto: LoginDto) {
-    const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
-    if (!user) throw new UnauthorizedException('Invalid credentials');
-
-    const passwordMatch = await bcrypt.compare(dto.password, user.passwordHash);
-    if (!passwordMatch) throw new UnauthorizedException('Invalid credentials');
-
-    if (user.status !== 'ACTIVE') {
-      throw new UnauthorizedException('Account is not active');
-    }
-
-    const tokens = await this.generateTokens(user.id, user.email, user.role);
-    await this.saveRefreshToken(user.id, tokens.refreshToken);
+    const roles = user.roles.map((r) => r.role.name);
+    const tokens = await this.generateTokens(user.id, user.email, roles);
 
     return {
-      user: {
-        id: user.id,
-        email: user.email,
-        role: user.role,
-        firstName: user.firstName,
-        lastName: user.lastName,
-      },
+      user: this.sanitizeUser(user),
       ...tokens,
     };
   }
 
-  async refreshTokens(userId: string, refreshToken: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user || !user.refreshTokenHash) throw new UnauthorizedException();
+  async login(dto: LoginDto) {
+    const user = await this.prisma.user.findUnique({
+      where: { email: dto.email },
+      include: {
+        profile: true,
+        roles: { include: { role: true } },
+      },
+    });
 
-    const tokenMatch = await bcrypt.compare(refreshToken, user.refreshTokenHash);
-    if (!tokenMatch) throw new UnauthorizedException('Invalid refresh token');
+    if (!user || user.deletedAt) throw new UnauthorizedException('Invalid credentials');
 
-    const tokens = await this.generateTokens(user.id, user.email, user.role);
-    await this.saveRefreshToken(user.id, tokens.refreshToken);
+    const passwordMatch = await bcrypt.compare(dto.password, user.passwordHash);
+    if (!passwordMatch) throw new UnauthorizedException('Invalid credentials');
 
-    return tokens;
+    if (user.status === 'BANNED') throw new UnauthorizedException('Account banned');
+    if (user.status === 'SUSPENDED') throw new UnauthorizedException('Account suspended');
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { lastLoginAt: new Date() },
+    });
+
+    const roles = user.roles.map((r) => r.role.name);
+    const tokens = await this.generateTokens(user.id, user.email, roles);
+
+    return {
+      user: this.sanitizeUser(user),
+      ...tokens,
+    };
+  }
+
+  async refresh(userId: string, refreshToken: string) {
+    const stored = await this.redis.get(`refresh:${userId}`);
+    if (!stored) throw new UnauthorizedException('Session expired');
+
+    const isValid = await bcrypt.compare(refreshToken, stored);
+    if (!isValid) throw new UnauthorizedException('Invalid refresh token');
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: { roles: { include: { role: true } } },
+    });
+    if (!user || user.deletedAt) throw new UnauthorizedException();
+
+    const roles = user.roles.map((r) => r.role.name);
+    return this.generateTokens(user.id, user.email, roles);
   }
 
   async logout(userId: string) {
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { refreshTokenHash: null },
-    });
-    await this.redisService.del(`auth:session:${userId}`);
+    await this.redis.del(`refresh:${userId}`);
   }
 
-  private async generateTokens(userId: string, email: string, role: string) {
-    const payload = { sub: userId, email, role };
+  async verifyEmail(userId: string) {
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: { emailVerifiedAt: new Date(), status: 'ACTIVE' },
+    });
+  }
+
+  private async generateTokens(userId: string, email: string, roles: RoleType[]) {
+    const payload = { sub: userId, email, roles };
 
     const [accessToken, refreshToken] = await Promise.all([
       this.jwtService.signAsync(payload, {
-        secret: this.configService.get('jwt.secret'),
-        expiresIn: this.configService.get('jwt.expiresIn'),
+        secret: this.configService.get<string>('jwt.accessSecret'),
+        expiresIn: this.configService.get<string>('jwt.accessExpiry', '15m'),
       }),
       this.jwtService.signAsync(payload, {
-        secret: this.configService.get('jwt.refreshSecret'),
-        expiresIn: this.configService.get('jwt.refreshExpiresIn'),
+        secret: this.configService.get<string>('jwt.refreshSecret'),
+        expiresIn: this.configService.get<string>('jwt.refreshExpiry', '7d'),
       }),
     ]);
+
+    const hash = await bcrypt.hash(refreshToken, 10);
+    await this.redis.set(`refresh:${userId}`, hash, REFRESH_TTL);
 
     return { accessToken, refreshToken };
   }
 
-  private async saveRefreshToken(userId: string, refreshToken: string) {
-    const hash = await bcrypt.hash(refreshToken, 10);
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { refreshTokenHash: hash },
-    });
+  private sanitizeUser(user: any) {
+    return {
+      id: user.id,
+      email: user.email,
+      status: user.status,
+      roles: user.roles?.map((r: any) => r.role.name) ?? [],
+      profile: user.profile
+        ? {
+            firstName: user.profile.firstName,
+            lastName: user.profile.lastName,
+            avatarUrl: user.profile.avatarUrl,
+          }
+        : null,
+    };
   }
 }

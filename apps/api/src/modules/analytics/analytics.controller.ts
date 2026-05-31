@@ -1,5 +1,6 @@
-import { Controller, Get, Query } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { Controller, Get, Param } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { RoleType } from '@prisma/client';
 import { AnalyticsService } from './analytics.service';
 import { CurrentUser } from '@common/decorators/current-user.decorator';
 import { Roles } from '@common/decorators/roles.decorator';
@@ -10,29 +11,24 @@ import { Roles } from '@common/decorators/roles.decorator';
 export class AnalyticsController {
   constructor(private analyticsService: AnalyticsService) {}
 
-  @Roles('OWNER')
-  @Get('owner/dashboard')
-  ownerDashboard(@CurrentUser('id') userId: string) {
-    return this.analyticsService.getOwnerDashboard(userId);
+  @Roles(RoleType.ADMIN, RoleType.SUPER_ADMIN)
+  @Get('admin')
+  @ApiOperation({ summary: 'Admin dashboard stats' })
+  adminStats() {
+    return this.analyticsService.getAdminStats();
   }
 
-  @Roles('OWNER')
-  @Get('owner/earnings')
-  ownerEarnings(
-    @CurrentUser('id') userId: string,
-    @Query('startDate') startDate?: string,
-    @Query('endDate') endDate?: string,
-  ) {
-    return this.analyticsService.getOwnerEarnings(
-      userId,
-      startDate ? new Date(startDate) : undefined,
-      endDate ? new Date(endDate) : undefined,
-    );
+  @Roles(RoleType.OWNER)
+  @Get('owner')
+  @ApiOperation({ summary: 'Owner revenue and booking stats' })
+  ownerStats(@CurrentUser('id') ownerId: string) {
+    return this.analyticsService.getOwnerStats(ownerId);
   }
 
-  @Roles('ADMIN')
-  @Get('admin/dashboard')
-  adminDashboard() {
-    return this.analyticsService.getAdminDashboard();
+  @Roles(RoleType.OWNER)
+  @Get('spaces/:id')
+  @ApiOperation({ summary: 'Stats for a specific parking space' })
+  spaceStats(@Param('id') id: string, @CurrentUser('id') ownerId: string) {
+    return this.analyticsService.getSpaceStats(id, ownerId);
   }
 }

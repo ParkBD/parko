@@ -1,127 +1,113 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '@infrastructure/prisma/prisma.service';
+import { RedisService } from '@infrastructure/redis/redis.service';
+
+const ANALYTICS_TTL = 300; // 5 min cache
 
 @Injectable()
 export class AnalyticsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private redis: RedisService,
+  ) {}
 
-  async getOwnerDashboard(ownerId: string) {
-    const lots = await this.prisma.parkingLot.findMany({
-      where: { ownerId },
-      select: { id: true },
-    });
-    const lotIds = lots.map((l) => l.id);
+  async getSpaceStats(spaceId: string, ownerId: string) {
+    const cacheKey = `analytics:space:${spaceId}`;
+    const cached = await this.redis.get(cacheKey);
+    if (cached) return JSON.parse(cached);
 
-    const [totalBookings, totalRevenue, activeBookings, lotStats] = await Promise.all([
-      this.prisma.booking.count({ where: { lotId: { in: lotIds } } }),
-      this.prisma.payment.aggregate({
-        where: { booking: { lotId: { in: lotIds } }, status: 'COMPLETED' },
-        _sum: { ownerEarnings: true },
+    const [space, bookings] = await Promise.all([
+      this.prisma.parkingSpace.findFirst({
+        where: { id: spaceId, ownerId, deletedAt: null },
+        select: { totalRevenue: true, totalBookings: true, avgRating: true, reviewCount: true, availableSlots: true, totalSlots: true },
+      }),
+      this.prisma.booking.groupBy({
+        by: ['status'],
+        where: { spaceId, deletedAt: null },
+        _count: { id: true },
+      }),
+    ]);
+
+    const result = {
+      spaceId,
+      totalRevenue: space?.totalRevenue?.toNumber() ?? 0,
+      totalBookings: space?.totalBookings ?? 0,
+      avgRating: space?.avgRating ?? 0,
+      reviewCount: space?.reviewCount ?? 0,
+      occupancyRate: space ? ((space.totalSlots - space.availableSlots) / space.totalSlots) * 100 : 0,
+      bookingsByStatus: bookings.reduce((acc, b) => ({ ...acc, [b.status]: b._count.id }), {}),
+    };
+
+    await this.redis.set(cacheKey, JSON.stringify(result), ANALYTICS_TTL);
+    return result;
+  }
+
+  async getOwnerStats(ownerId: string) {
+    const cacheKey = `analytics:owner:${ownerId}`;
+    const cached = await this.redis.get(cacheKey);
+    if (cached) return JSON.parse(cached);
+
+    const [spacesAgg, bookingsAgg, recentBookings] = await Promise.all([
+      this.prisma.parkingSpace.aggregate({
+        where: { ownerId, deletedAt: null },
+        _sum: { totalRevenue: true, totalBookings: true },
+        _count: { id: true },
+        _avg: { avgRating: true },
       }),
       this.prisma.booking.count({
-        where: { lotId: { in: lotIds }, status: 'ACTIVE' },
+        where: { space: { ownerId }, deletedAt: null, status: 'COMPLETED' },
       }),
-      this.prisma.lotAnalytics.findMany({
-        where: { lotId: { in: lotIds } },
-        include: { lot: { select: { name: true } } },
-      }),
-    ]);
-
-    return {
-      totalBookings,
-      totalRevenue: totalRevenue._sum.ownerEarnings ?? 0,
-      activeBookings,
-      lotStats,
-    };
-  }
-
-  async getOwnerEarnings(ownerId: string, startDate?: Date, endDate?: Date) {
-    const lots = await this.prisma.parkingLot.findMany({
-      where: { ownerId },
-      select: { id: true },
-    });
-    const lotIds = lots.map((l) => l.id);
-
-    const where: any = {
-      booking: { lotId: { in: lotIds } },
-      status: 'COMPLETED',
-    };
-    if (startDate || endDate) {
-      where.processedAt = {};
-      if (startDate) where.processedAt.gte = startDate;
-      if (endDate) where.processedAt.lte = endDate;
-    }
-
-    return this.prisma.payment.findMany({
-      where,
-      select: {
-        amount: true,
-        ownerEarnings: true,
-        platformFee: true,
-        processedAt: true,
-        booking: {
-          select: {
-            bookingRef: true,
-            startTime: true,
-            lot: { select: { name: true } },
-          },
-        },
-      },
-      orderBy: { processedAt: 'desc' },
-    });
-  }
-
-  async getAdminDashboard() {
-    const [totalUsers, totalLots, totalBookings, totalRevenue, pendingLots, pendingWithdrawals] =
-      await Promise.all([
-        this.prisma.user.count(),
-        this.prisma.parkingLot.count({ where: { status: 'ACTIVE' } }),
-        this.prisma.booking.count(),
-        this.prisma.payment.aggregate({
-          where: { status: 'COMPLETED' },
-          _sum: { platformFee: true, amount: true },
-        }),
-        this.prisma.parkingLot.count({ where: { status: 'PENDING_APPROVAL' } }),
-        this.prisma.withdrawal.count({ where: { status: 'PENDING' } }),
-      ]);
-
-    return {
-      totalUsers,
-      totalLots,
-      totalBookings,
-      totalRevenue: totalRevenue._sum.amount ?? 0,
-      platformEarnings: totalRevenue._sum.platformFee ?? 0,
-      pendingLots,
-      pendingWithdrawals,
-    };
-  }
-
-  async updateLotAnalytics(lotId: string) {
-    const [bookings, revenue, ratings] = await Promise.all([
-      this.prisma.booking.count({ where: { lotId, status: 'COMPLETED' } }),
-      this.prisma.payment.aggregate({
-        where: { booking: { lotId }, status: 'COMPLETED' },
-        _sum: { ownerEarnings: true },
-      }),
-      this.prisma.review.aggregate({
-        where: { booking: { lotId } },
-        _avg: { rating: true },
+      this.prisma.booking.findMany({
+        where: { space: { ownerId }, deletedAt: null },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+        select: { id: true, bookingRef: true, totalAmount: true, status: true, createdAt: true, space: { select: { name: true } } },
       }),
     ]);
 
-    await this.prisma.lotAnalytics.upsert({
-      where: { lotId },
-      create: {
-        lotId,
-        totalBookings: bookings,
-        totalRevenue: revenue._sum.ownerEarnings ?? 0,
-        avgRating: ratings._avg.rating ?? 0,
-      },
-      update: {
-        totalBookings: bookings,
-        totalRevenue: revenue._sum.ownerEarnings ?? 0,
-        avgRating: ratings._avg.rating ?? 0,
-      },
-    });
+    const result = {
+      totalSpaces: spacesAgg._count.id,
+      totalRevenue: spacesAgg._sum.totalRevenue?.toNumber() ?? 0,
+      totalBookings: spacesAgg._sum.totalBookings ?? 0,
+      completedBookings: bookingsAgg,
+      avgRating: spacesAgg._avg.avgRating ?? 0,
+      recentBookings: recentBookings.map((b) => ({
+        ...b,
+        totalAmount: (b.totalAmount as any).toNumber(),
+      })),
+    };
+
+    await this.redis.set(cacheKey, JSON.stringify(result), ANALYTICS_TTL);
+    return result;
+  }
+
+  async getAdminStats() {
+    const cacheKey = 'analytics:admin:dashboard';
+    const cached = await this.redis.get(cacheKey);
+    if (cached) return JSON.parse(cached);
+
+    const [users, spaces, bookings, pendingSpaces, pendingPayouts, revenue] = await Promise.all([
+      this.prisma.user.count({ where: { deletedAt: null } }),
+      this.prisma.parkingSpace.count({ where: { deletedAt: null, status: 'ACTIVE' } }),
+      this.prisma.booking.count({ where: { deletedAt: null } }),
+      this.prisma.parkingSpace.count({ where: { status: 'PENDING_APPROVAL' } }),
+      this.prisma.ownerPayout.count({ where: { status: 'PENDING' } }),
+      this.prisma.booking.aggregate({
+        where: { status: 'COMPLETED' },
+        _sum: { totalAmount: true },
+      }),
+    ]);
+
+    const result = {
+      users,
+      activeSpaces: spaces,
+      totalBookings: bookings,
+      pendingApprovals: pendingSpaces,
+      pendingPayouts,
+      totalRevenue: revenue._sum.totalAmount?.toNumber() ?? 0,
+    };
+
+    await this.redis.set(cacheKey, JSON.stringify(result), ANALYTICS_TTL);
+    return result;
   }
 }
