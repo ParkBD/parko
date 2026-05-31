@@ -948,6 +948,7 @@ model DisputeNote {
 
 model ParkingLotGeo {
   // boundary, entrances, exits stored as raw geometry via raw SQL (PostGIS)
+  id        String   @id @default(uuid()) @db.Uuid
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

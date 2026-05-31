@@ -15,7 +15,7 @@ RUN apk add --no-cache libc6-compat openssl python3 make g++ curl
 COPY package*.json ./
 
 # Install ALL deps (dev + prod) inside the image
-RUN npm ci
+RUN npm install
 
 # Copy Prisma schema and generate client
 # Source is bind-mounted later; we generate here so the Prisma client
