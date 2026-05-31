@@ -171,14 +171,14 @@ export class AdminFraudService {
         createdAt: { gte: since },
       },
       select: {
-        userId: true, amount: true,
-        user: { select: { email: true } },
+        amount: true,
+        wallet: { select: { userId: true, user: { select: { email: true } } } },
       },
     });
 
     return credits.map((c) => ({
-      userId: c.userId,
-      email: c.user.email,
+      userId: c.wallet.userId,
+      email: c.wallet.user.email,
       signal: `Large admin credit of $${c.amount.toNumber().toFixed(2)} in last 7 days`,
       score: 20,
     }));

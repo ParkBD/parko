@@ -10,7 +10,7 @@ import { SLOT_OCCUPYING_STATES } from './booking-state-machine';
 
 export interface BookingExpireJobData {
   bookingId: string;
-  expectedStatus: BookingStatus.PENDING | BookingStatus.RESERVED;
+  expectedStatus: 'PENDING' | 'RESERVED';
   reason: 'NO_PAYMENT' | 'NO_ARRIVAL';
 }
 

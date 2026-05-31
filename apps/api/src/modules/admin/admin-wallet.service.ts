@@ -16,7 +16,7 @@ export class AdminWalletService {
   async listWallets(page = 1, limit = 20, frozen?: boolean, minBalance?: number) {
     const skip = (page - 1) * limit;
     const where: any = {};
-    if (frozen !== undefined) where.isFrozen = frozen;
+    if (frozen !== undefined) where.frozenAt = frozen ? { not: null } : null;
     if (minBalance !== undefined) where.balance = { gte: minBalance };
 
     const [data, total] = await Promise.all([
@@ -82,10 +82,10 @@ export class AdminWalletService {
   async freezeWallet(walletId: string, adminId: string, reason: string) {
     const wallet = await this.prisma.wallet.findUnique({ where: { id: walletId } });
     if (!wallet) throw new NotFoundException('Wallet not found');
-    if (wallet.isFrozen) throw new BadRequestException('Wallet is already frozen');
+    if (!!wallet.frozenAt) throw new BadRequestException('Wallet is already frozen');
 
     await this.prisma.$transaction(async (tx) => {
-      await tx.wallet.update({ where: { id: walletId }, data: { isFrozen: true, frozenAt: new Date() } });
+      await tx.wallet.update({ where: { id: walletId }, data: { frozenAt: new Date(), frozenReason: reason } });
       await tx.adminAction.create({
         data: { adminId, type: 'FREEZE_WALLET', entityType: 'wallet', entityId: walletId, reason },
       });
@@ -105,10 +105,10 @@ export class AdminWalletService {
   async unfreezeWallet(walletId: string, adminId: string, reason: string) {
     const wallet = await this.prisma.wallet.findUnique({ where: { id: walletId } });
     if (!wallet) throw new NotFoundException('Wallet not found');
-    if (!wallet.isFrozen) throw new BadRequestException('Wallet is not frozen');
+    if (!wallet.frozenAt) throw new BadRequestException('Wallet is not frozen');
 
     await this.prisma.$transaction(async (tx) => {
-      await tx.wallet.update({ where: { id: walletId }, data: { isFrozen: false, frozenAt: null } });
+      await tx.wallet.update({ where: { id: walletId }, data: { frozenAt: null, frozenReason: null } });
       await tx.adminAction.create({
         data: { adminId, type: 'UNFREEZE_WALLET', entityType: 'wallet', entityId: walletId, reason },
       });
@@ -148,7 +148,7 @@ export class AdminWalletService {
       await tx.wallet.update({ where: { id: walletId }, data: { balance: newBalance } });
       await tx.walletTransaction.create({
         data: {
-          walletId, userId: wallet.userId,
+          walletId,
           type: type as any,
           amount: Math.abs(amount),
           balanceBefore: currentBalance,
@@ -208,8 +208,8 @@ export class AdminWalletService {
 
       // Coins purchased in last 30 days
       this.prisma.coinPurchase.aggregate({
-        where: { createdAt: { gte: new Date(Date.now() - 30 * 86400000) }, status: 'COMPLETED' as any },
-        _sum: { coinsReceived: true },
+        where: { createdAt: { gte: new Date(Date.now() - 30 * 86400000) }, paymentStatus: 'COMPLETED' as any },
+        _sum: { coinsAmount: true },
         _count: { id: true },
       }),
 
@@ -225,8 +225,8 @@ export class AdminWalletService {
       totalCirculating: totalCirculating._sum.coinBalance ?? 0,
       topHolders: topHolders.map((w) => ({ ...w })),
       last30Days: {
-        purchased: purchaseVolume30d._sum.coinsReceived ?? 0,
-        purchaseCount: purchaseVolume30d._count.id,
+        purchased: purchaseVolume30d._sum.coinsAmount ?? 0,
+        purchaseCount: (purchaseVolume30d._count as any)?.id ?? 0,
         spent: spentVolume30d._sum.coinsUsed ?? 0,
         spendCount: spentVolume30d._count.id,
       },
