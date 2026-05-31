@@ -1,50 +1,64 @@
-import { Body, Controller, Get, Param, Patch, Query } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Patch,
+  Post,
+} from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiNoContentResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import { UsersService } from './users.service';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { CurrentUser } from '@common/decorators/current-user.decorator';
-import { Roles } from '@common/decorators/roles.decorator';
 
 @ApiTags('users')
 @ApiBearerAuth()
 @Controller('users')
 export class UsersController {
-  constructor(private usersService: UsersService) {}
+  constructor(private readonly usersService: UsersService) {}
 
   @Get('me')
-  getMe(@CurrentUser('id') userId: string) {
-    return this.usersService.findById(userId);
+  @ApiOperation({ summary: 'Get current user profile' })
+  @ApiOkResponse({ description: 'User profile with wallet and roles' })
+  getProfile(@CurrentUser('id') userId: string) {
+    return this.usersService.getProfile(userId);
   }
 
   @Patch('me')
-  updateMe(
+  @ApiOperation({ summary: 'Update current user profile' })
+  @ApiOkResponse({ description: 'Updated profile' })
+  updateProfile(
     @CurrentUser('id') userId: string,
-    @Body() body: { firstName?: string; lastName?: string; avatarUrl?: string },
+    @Body() dto: UpdateProfileDto,
   ) {
-    return this.usersService.updateProfile(userId, body);
+    return this.usersService.updateProfile(userId, dto);
   }
 
-  @Roles('ADMIN')
-  @Get()
-  findAll(
-    @Query('page') page = 1,
-    @Query('limit') limit = 20,
-    @Query('role') role?: string,
+  @Post('me/change-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Change current user password' })
+  @ApiOkResponse({ description: 'Password changed successfully' })
+  changePassword(
+    @CurrentUser('id') userId: string,
+    @Body() dto: ChangePasswordDto,
   ) {
-    return this.usersService.findAll(+page, +limit, role);
+    return this.usersService.changePassword(userId, dto);
   }
 
-  @Roles('ADMIN')
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.usersService.findById(id);
-  }
-
-  @Roles('ADMIN')
-  @Patch(':id/status')
-  updateStatus(
-    @Param('id') id: string,
-    @Body('status') status: 'ACTIVE' | 'SUSPENDED',
-  ) {
-    return this.usersService.updateStatus(id, status);
+  @Delete('me')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Soft-delete current user account' })
+  @ApiNoContentResponse({ description: 'Account deleted' })
+  softDelete(@CurrentUser('id') userId: string) {
+    return this.usersService.softDelete(userId);
   }
 }

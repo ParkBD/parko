@@ -1,33 +1,30 @@
-import { IsEmail, IsEnum, IsNotEmpty, IsOptional, IsString, MinLength } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { UserRole } from '@prisma/client';
+import { IsEmail, IsString, MinLength, MaxLength, IsOptional, Matches } from 'class-validator';
 
 export class RegisterDto {
-  @ApiProperty({ example: 'john@example.com' })
+  @ApiProperty({ example: 'user@example.com' })
   @IsEmail()
   email: string;
 
-  @ApiProperty({ example: 'John' })
-  @IsString()
-  @IsNotEmpty()
-  firstName: string;
-
-  @ApiProperty({ example: 'Doe' })
-  @IsString()
-  @IsNotEmpty()
-  lastName: string;
-
-  @ApiProperty({ minLength: 8 })
+  @ApiProperty({ example: 'Password@123', minLength: 8 })
   @IsString()
   @MinLength(8)
+  @Matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])/, {
+    message: 'Password must contain uppercase, lowercase, number, and special character',
+  })
   password: string;
 
-  @ApiPropertyOptional({ enum: UserRole, default: UserRole.DRIVER })
-  @IsOptional()
-  @IsEnum(UserRole)
-  role?: UserRole;
+  @ApiProperty({ example: 'Abir' })
+  @IsString()
+  @MaxLength(50)
+  firstName: string;
 
-  @ApiPropertyOptional({ example: '+8801711000000' })
+  @ApiProperty({ example: 'Hossain' })
+  @IsString()
+  @MaxLength(50)
+  lastName: string;
+
+  @ApiPropertyOptional({ example: '+8801700000000' })
   @IsOptional()
   @IsString()
   phone?: string;
