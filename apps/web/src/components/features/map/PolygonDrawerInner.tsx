@@ -16,9 +16,17 @@ export function PolygonDrawerInner({ onPolygonComplete, isActive }: PolygonDrawe
     async function init() {
       L = (await import('leaflet')).default;
       await import('leaflet-draw');
-      await import('leaflet-draw/dist/leaflet.draw.css');
 
       if (!mounted) return;
+
+      // Inject leaflet-draw CSS via link tag
+      if (!document.getElementById('leaflet-draw-css')) {
+        const link = document.createElement('link');
+        link.id = 'leaflet-draw-css';
+        link.rel = 'stylesheet';
+        link.href = 'https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css';
+        document.head.appendChild(link);
+      }
 
       drawnItemsRef.current = new L.FeatureGroup();
       map.addLayer(drawnItemsRef.current);
@@ -70,10 +78,9 @@ export function PolygonDrawerInner({ onPolygonComplete, isActive }: PolygonDrawe
           map.addControl(drawControlRef.current);
         }
 
-        // Listen for draw complete
         const onDrawCreated = (e: any) => {
           const { layer } = e;
-          const latLngs: L.LatLng[] = layer.getLatLngs()[0];
+          const latLngs: any[] = layer.getLatLngs()[0];
 
           if (latLngs.length < 3) {
             alert('Polygon requires at least 3 points');
@@ -83,15 +90,12 @@ export function PolygonDrawerInner({ onPolygonComplete, isActive }: PolygonDrawe
           drawnItemsRef.current.clearLayers();
           drawnItemsRef.current.addLayer(layer);
 
-          // Build GeoJSON — Leaflet uses [lat,lng] but GeoJSON uses [lng,lat]
+          // GeoJSON uses [lng, lat], Leaflet uses [lat, lng]
           const coords = latLngs.map((ll: any) => [ll.lng, ll.lat]);
           // Close the ring
           coords.push(coords[0]);
 
-          const geojson = {
-            type: 'Polygon',
-            coordinates: [coords],
-          };
+          const geojson = { type: 'Polygon', coordinates: [coords] };
           onPolygonComplete(geojson);
         };
 

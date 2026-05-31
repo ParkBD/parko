@@ -18,9 +18,17 @@ export function PolygonEditorInner({ polygon, onChange, readonly = false }: Poly
     async function init() {
       const L = (await import('leaflet')).default;
       await import('leaflet-draw');
-      await import('leaflet-draw/dist/leaflet.draw.css');
 
       if (!mounted) return;
+
+      // Inject CSS if not already loaded
+      if (!document.getElementById('leaflet-draw-css')) {
+        const link = document.createElement('link');
+        link.id = 'leaflet-draw-css';
+        link.rel = 'stylesheet';
+        link.href = 'https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css';
+        document.head.appendChild(link);
+      }
 
       // Clean up previous layers
       if (drawnItemsRef.current) {
@@ -34,8 +42,8 @@ export function PolygonEditorInner({ polygon, onChange, readonly = false }: Poly
       drawnItemsRef.current = new L.FeatureGroup();
       map.addLayer(drawnItemsRef.current);
 
-      // Convert GeoJSON coords ([lng, lat]) to Leaflet LatLngs ([lat, lng])
-      const rawCoords: number[][] = polygon.coordinates?.[0] ?? [];
+      // polygon is guaranteed non-null here due to early return above
+      const rawCoords: number[][] = (polygon as Record<string, any>).coordinates?.[0] ?? [];
       const latLngs = rawCoords.map((c: number[]) => L.latLng(c[1], c[0]));
 
       layerRef.current = L.polygon(latLngs, {
@@ -44,7 +52,6 @@ export function PolygonEditorInner({ polygon, onChange, readonly = false }: Poly
       });
       drawnItemsRef.current.addLayer(layerRef.current);
 
-      // Fit map to polygon bounds
       const bounds = layerRef.current.getBounds();
       if (bounds.isValid()) map.fitBounds(bounds, { padding: [20, 20] });
 

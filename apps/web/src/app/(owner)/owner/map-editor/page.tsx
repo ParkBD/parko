@@ -135,7 +135,7 @@ export default function MapEditorPage() {
             >
               <option value="">— choose a lot —</option>
               {lots?.map((lot: any) => (
-                <option key={lot.id} value={lot.id}>{lot.name}</option>
+                <option key={lot.id} value={lot.id}>{lot.name ?? lot.title}</option>
               ))}
             </select>
           </div>
@@ -173,7 +173,7 @@ export default function MapEditorPage() {
             <div className="rounded-lg bg-gray-50 p-3 text-sm text-gray-700">
               <p className="font-semibold mb-2">Step 4: Review</p>
               <ul className="space-y-1">
-                <li>Lot: <span className="font-medium">{lots?.find((l: any) => l.id === selectedLotId)?.name ?? '—'}</span></li>
+                <li>Lot: <span className="font-medium">{((lots as any[])?.find((l) => l.id === selectedLotId) as any)?.name ?? ((lots as any[])?.find((l) => l.id === selectedLotId) as any)?.title ?? '—'}</span></li>
                 <li>Polygon: <span className={`font-medium ${polygon ? 'text-green-600' : 'text-red-500'}`}>{polygon ? 'Defined' : 'Missing'}</span></li>
                 <li>Entrances: <span className="font-medium">{entrances.length}</span></li>
                 <li>Exits: <span className="font-medium">{exits.length}</span></li>
