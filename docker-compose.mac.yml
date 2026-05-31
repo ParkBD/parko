@@ -1,0 +1,39 @@
+# docker-compose.mac.yml
+# Applied automatically by scripts/dev.sh on macOS.
+#
+# Apple Silicon (M1/M2/M3): uses linux/arm64 — native speed, no Rosetta.
+# Intel Mac:                 uses linux/amd64 — explicit, same as prod.
+#
+# Docker Desktop 4.6+ with VirtioFS makes volume performance near-native,
+# so no polling needed on macOS in most cases.
+#
+# Usage: docker compose -f docker-compose.yml -f docker-compose.mac.yml up
+
+x-mac-platform: &mac-platform
+  platform: ${DOCKER_DEFAULT_PLATFORM:-linux/arm64}
+
+services:
+  api:
+    <<: *mac-platform
+    # No polling — VirtioFS handles inotify via Docker Desktop bridge
+
+  worker:
+    <<: *mac-platform
+
+  web:
+    <<: *mac-platform
+
+  postgres:
+    <<: *mac-platform
+
+  redis:
+    <<: *mac-platform
+
+  minio:
+    <<: *mac-platform
+
+  mailhog:
+    <<: *mac-platform
+
+  adminer:
+    <<: *mac-platform

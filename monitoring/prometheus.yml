@@ -1,0 +1,61 @@
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  external_labels:
+    env: production
+    app: parknest
+
+rule_files:
+  - "alerts/*.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []  # wire alertmanager here when needed
+
+scrape_configs:
+
+  # ── NestJS API metrics (/metrics endpoint) ──────────────────────────────────
+  - job_name: parknest_api
+    static_configs:
+      - targets: ["api:3001"]
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  # ── BullMQ Worker (same metrics port, separate host) ───────────────────────
+  - job_name: parknest_worker
+    static_configs:
+      - targets: ["worker:3002"]
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  # ── PostgreSQL via postgres_exporter ───────────────────────────────────────
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  # ── Redis via redis_exporter ───────────────────────────────────────────────
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
+  # ── Host system metrics ────────────────────────────────────────────────────
+  - job_name: node_exporter
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  # ── Container metrics ──────────────────────────────────────────────────────
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+    scrape_interval: 15s
+
+  # ── Nginx via nginx_exporter ───────────────────────────────────────────────
+  - job_name: nginx
+    static_configs:
+      - targets: ["nginx-exporter:9113"]
+
+  # ── Prometheus itself ──────────────────────────────────────────────────────
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

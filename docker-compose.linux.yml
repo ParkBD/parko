@@ -1,0 +1,19 @@
+# docker-compose.linux.yml
+# Applied automatically by scripts/dev.sh on Linux.
+#
+# Fixes:
+#   1. user: "${UID}:${GID}" — files created inside containers are owned by
+#      the current host user, not root. Without this, bind-mounted source
+#      files (e.g. Prisma migrations, generated files) are root-owned on host.
+#
+# Usage: docker compose -f docker-compose.yml -f docker-compose.linux.yml up
+
+services:
+  api:
+    user: "${UID:-1000}:${GID:-1000}"
+
+  worker:
+    user: "${UID:-1000}:${GID:-1000}"
+
+  web:
+    user: "${UID:-1000}:${GID:-1000}"

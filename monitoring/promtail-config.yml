@@ -1,0 +1,53 @@
+server:
+  http_listen_port: 9080
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker_containers
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: docker
+          __path__: /var/lib/docker/containers/*/*-json.log
+
+    pipeline_stages:
+      # Parse Docker JSON log format
+      - json:
+          expressions:
+            output: log
+            stream: stream
+            attrs: attrs
+      - json:
+          expressions:
+            tag: attrs.tag
+          source: attrs
+      - regex:
+          expression: '(?P<service>[^/]+)$'
+          source: tag
+      - labels:
+          stream:
+          service:
+      - output:
+          source: output
+
+      # Parse NestJS JSON logs emitted by the app
+      - match:
+          selector: '{service=~"parknest.*"}'
+          stages:
+            - json:
+                expressions:
+                  level:     level
+                  context:   context
+                  message:   message
+                  timestamp: timestamp
+            - labels:
+                level:
+                context:
+            - timestamp:
+                source: timestamp
+                format: RFC3339

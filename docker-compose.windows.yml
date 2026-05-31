@@ -1,0 +1,47 @@
+# docker-compose.windows.yml
+# Applied automatically by scripts/dev.ps1
+#
+# Fixes on Windows:
+#   1. CHOKIDAR_USEPOLLING — NestJS file watcher (inotify doesn't exist on Windows)
+#   2. WATCHPACK_POLLING   — Next.js webpack watcher
+#   3. platform: linux/amd64 — explicit x86_64 (Docker Desktop for Windows uses linux/amd64)
+#   4. Higher poll interval to reduce CPU usage on Windows
+#
+# Usage: docker compose -f docker-compose.yml -f docker-compose.windows.yml up
+
+services:
+  api:
+    platform: linux/amd64
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "500"
+      WATCHPACK_POLLING: "true"
+
+  worker:
+    platform: linux/amd64
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "500"
+      WATCHPACK_POLLING: "true"
+
+  web:
+    platform: linux/amd64
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "500"
+      WATCHPACK_POLLING: "true"
+
+  postgres:
+    platform: linux/amd64
+
+  redis:
+    platform: linux/amd64
+
+  minio:
+    platform: linux/amd64
+
+  mailhog:
+    platform: linux/amd64
+
+  adminer:
+    platform: linux/amd64
