@@ -28,6 +28,10 @@ import { SearchModule } from './modules/search/search.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { GeoModule } from './modules/geo/geo.module';
+import { TopupModule } from './modules/topup/topup.module';
+import { WithdrawalModule } from './modules/withdrawal/withdrawal.module';
+import { MailModule } from './mail/mail.module';
+import { VerificationModule } from './modules/verification/verification.module';
 
 @Module({
   imports: [
@@ -39,6 +43,7 @@ import { GeoModule } from './modules/geo/geo.module';
     PrismaModule,
     RedisModule,
     QueueModule,
+    MailModule,
     AuthModule,
     UsersModule,
     ParkingModule,
@@ -51,6 +56,9 @@ import { GeoModule } from './modules/geo/geo.module';
     AnalyticsModule,
     AdminModule,
     GeoModule,
+    TopupModule,
+    WithdrawalModule,
+    VerificationModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: HttpExceptionFilter },
