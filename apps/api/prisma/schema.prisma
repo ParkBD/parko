@@ -1,0 +1,823 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// ParkNest — Complete PostgreSQL Schema  (UUID PKs · Soft Deletes · Auditing)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ER DIAGRAM
+//
+//  Role <──(N:M via UserRoleAssignment)──> User
+//                                           |
+//                ┌─────────────┬────────────┼──────────────────┐
+//                v             v            v                  v
+//             Profile       Wallet    ParkingSpace         Booking
+//                          /     \     /   |   \            /     \
+//               CoinPurchase      |  Img  Poly  Avail  Status    Review
+//               WalletTxn         |  SecurityContact
+//               OwnerPayout       |
+//
+//  User --> VerificationCode
+//  User --> Notification
+//  User --> AuditLog (as subject or actor)
+//  User --> AdminAction (admin role only)
+//
+// ═══════════════════════════════════════════════════════════════════════════
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum RoleType {
+  DRIVER
+  OWNER
+  SECURITY
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING_VERIFICATION
+  BANNED
+  INACTIVE
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+  PREFER_NOT_TO_SAY
+}
+
+enum WalletTransactionType {
+  CREDIT
+  DEBIT
+  REFUND
+  WITHDRAWAL
+  COIN_PURCHASE
+  BOOKING_PAYMENT
+  PAYOUT
+  ADJUSTMENT
+}
+
+enum WalletTransactionStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REVERSED
+}
+
+enum CoinPackage {
+  STARTER
+  BASIC
+  STANDARD
+  PREMIUM
+  ENTERPRISE
+}
+
+enum ParkingSpaceStatus {
+  ACTIVE
+  INACTIVE
+  PENDING_APPROVAL
+  REJECTED
+  SUSPENDED
+}
+
+enum ParkingSpaceType {
+  OPEN
+  COVERED
+  UNDERGROUND
+  MULTI_LEVEL
+  ROOFTOP
+}
+
+enum VehicleType {
+  MOTORCYCLE
+  CAR
+  SUV
+  TRUCK
+  BUS
+  BICYCLE
+  OTHER
+}
+
+enum AvailabilityType {
+  REGULAR
+  OVERRIDE
+  BLOCKED
+}
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CHECKED_IN
+  CHECKED_OUT
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+  DISPUTED
+}
+
+enum PaymentMethod {
+  WALLET
+  COINS
+  CARD
+  BKASH
+  NAGAD
+  ROCKET
+  CASH
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum VerificationCodeType {
+  EMAIL_VERIFICATION
+  PHONE_VERIFICATION
+  PASSWORD_RESET
+  CHECK_IN
+  CHECK_OUT
+  TWO_FACTOR
+  WITHDRAWAL
+}
+
+enum PayoutStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum PayoutMethod {
+  BANK_TRANSFER
+  BKASH
+  NAGAD
+  ROCKET
+}
+
+enum NotificationType {
+  BOOKING_CONFIRMED
+  BOOKING_CANCELLED
+  BOOKING_REMINDER
+  CHECK_IN
+  CHECK_OUT
+  PAYMENT_RECEIVED
+  PAYMENT_FAILED
+  PAYOUT_PROCESSED
+  REVIEW_RECEIVED
+  ACCOUNT_VERIFIED
+  PASSWORD_RESET
+  PROMOTIONAL
+  SYSTEM
+  SECURITY_ALERT
+}
+
+enum NotificationChannel {
+  PUSH
+  EMAIL
+  SMS
+  IN_APP
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  SOFT_DELETE
+  RESTORE
+  LOGIN
+  LOGOUT
+  FAILED_LOGIN
+  PASSWORD_CHANGE
+  ROLE_CHANGE
+  STATUS_CHANGE
+  APPROVE
+  REJECT
+  SUSPEND
+  UNSUSPEND
+  EXPORT
+  IMPORT
+}
+
+enum AdminActionType {
+  APPROVE_PARKING_SPACE
+  REJECT_PARKING_SPACE
+  SUSPEND_USER
+  UNSUSPEND_USER
+  BAN_USER
+  UNBAN_USER
+  PROCESS_PAYOUT
+  CANCEL_BOOKING
+  ISSUE_REFUND
+  ADJUST_WALLET
+  SEND_NOTIFICATION
+  EXPORT_DATA
+}
+
+// ─── Roles ────────────────────────────────────────────────────────────────────
+
+model Role {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        RoleType @unique
+  description String?
+  permissions Json     @default("[]")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  assignments UserRoleAssignment[]
+
+  @@map("roles")
+}
+
+// ─── Users ────────────────────────────────────────────────────────────────────
+
+model User {
+  id              String     @id @default(uuid()) @db.Uuid
+  email           String     @unique
+  phone           String?    @unique
+  passwordHash    String
+  status          UserStatus @default(PENDING_VERIFICATION)
+  emailVerifiedAt DateTime?
+  phoneVerifiedAt DateTime?
+  lastLoginAt     DateTime?
+  lastLoginIp     String?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  deletedAt       DateTime?
+
+  profile           Profile?
+  roles             UserRoleAssignment[]
+  wallet            Wallet?
+  ownedSpaces       ParkingSpace[]       @relation("SpaceOwner")
+  driverBookings    Booking[]            @relation("DriverBookings")
+  authoredReviews   Review[]             @relation("ReviewAuthor")
+  receivedReviews   Review[]             @relation("ReviewTarget")
+  notifications     Notification[]
+  verificationCodes VerificationCode[]
+  securityContact   SecurityContact?
+  auditSubjectLogs  AuditLog[]           @relation("AuditSubject")
+  auditActorLogs    AuditLog[]           @relation("AuditActor")
+  adminActions      AdminAction[]
+
+  @@index([email])
+  @@index([phone])
+  @@index([status])
+  @@index([deletedAt])
+  @@map("users")
+}
+
+// ─── User Role Assignments (N:M junction) ────────────────────────────────────
+
+model UserRoleAssignment {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @db.Uuid
+  roleId     String   @db.Uuid
+  assignedAt DateTime @default(now())
+  assignedBy String?  @db.Uuid
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, roleId])
+  @@index([userId])
+  @@index([roleId])
+  @@map("user_role_assignments")
+}
+
+// ─── Profiles ─────────────────────────────────────────────────────────────────
+
+model Profile {
+  id                String    @id @default(uuid()) @db.Uuid
+  userId            String    @unique @db.Uuid
+  firstName         String
+  lastName          String
+  displayName       String?
+  avatarUrl         String?
+  bio               String?
+  gender            Gender?
+  dateOfBirth       DateTime?
+  nationalId        String?   @unique
+  drivingLicense    String?
+  addressLine1      String?
+  addressLine2      String?
+  city              String?
+  state             String?
+  country           String    @default("BD")
+  postalCode        String?
+  preferredLanguage String    @default("en")
+  timezone          String    @default("Asia/Dhaka")
+  isPublic          Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("profiles")
+}
+
+// ─── Wallets ──────────────────────────────────────────────────────────────────
+
+model Wallet {
+  id             String    @id @default(uuid()) @db.Uuid
+  userId         String    @unique @db.Uuid
+  balance        Decimal   @default(0) @db.Decimal(12, 2)
+  coinBalance    Int       @default(0)
+  totalEarned    Decimal   @default(0) @db.Decimal(12, 2)
+  totalSpent     Decimal   @default(0) @db.Decimal(12, 2)
+  totalWithdrawn Decimal   @default(0) @db.Decimal(12, 2)
+  currency       String    @default("BDT")
+  isActive       Boolean   @default(true)
+  frozenAt       DateTime?
+  frozenReason   String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user          User                @relation(fields: [userId], references: [id], onDelete: Restrict)
+  transactions  WalletTransaction[]
+  coinPurchases CoinPurchase[]
+  payouts       OwnerPayout[]
+
+  @@index([userId])
+  @@map("wallets")
+}
+
+// ─── Wallet Transactions ──────────────────────────────────────────────────────
+// Append-only ledger. balanceBefore/After enables point-in-time reconstruction.
+
+model WalletTransaction {
+  id            String                  @id @default(uuid()) @db.Uuid
+  walletId      String                  @db.Uuid
+  type          WalletTransactionType
+  status        WalletTransactionStatus @default(PENDING)
+  amount        Decimal                 @db.Decimal(12, 2)
+  balanceBefore Decimal                 @db.Decimal(12, 2)
+  balanceAfter  Decimal                 @db.Decimal(12, 2)
+  currency      String                  @default("BDT")
+  referenceType String?
+  referenceId   String?                 @db.Uuid
+  description   String?
+  metadata      Json?
+  gatewayRef    String?
+  failureReason String?
+  processedAt   DateTime?
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  @@index([walletId])
+  @@index([type])
+  @@index([status])
+  @@index([referenceType, referenceId])
+  @@index([createdAt])
+  @@map("wallet_transactions")
+}
+
+// ─── Coin Purchases ───────────────────────────────────────────────────────────
+
+model CoinPurchase {
+  id              String        @id @default(uuid()) @db.Uuid
+  walletId        String        @db.Uuid
+  package         CoinPackage
+  coinsAmount     Int
+  priceAmount     Decimal       @db.Decimal(10, 2)
+  currency        String        @default("BDT")
+  paymentMethod   PaymentMethod
+  paymentStatus   PaymentStatus @default(PENDING)
+  gatewayRef      String?
+  gatewayResponse Json?
+  processedAt     DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  @@index([walletId])
+  @@index([paymentStatus])
+  @@index([createdAt])
+  @@map("coin_purchases")
+}
+
+// ─── Parking Spaces ───────────────────────────────────────────────────────────
+
+model ParkingSpace {
+  id                  String             @id @default(uuid()) @db.Uuid
+  ownerId             String             @db.Uuid
+  name                String
+  description         String?
+  spaceType           ParkingSpaceType   @default(OPEN)
+  status              ParkingSpaceStatus @default(PENDING_APPROVAL)
+  totalSlots          Int
+  availableSlots      Int
+  pricePerHour        Decimal            @db.Decimal(10, 2)
+  pricePerDay         Decimal?           @db.Decimal(10, 2)
+  currency            String             @default("BDT")
+  addressLine1        String
+  addressLine2        String?
+  city                String
+  state               String?
+  country             String             @default("BD")
+  postalCode          String?
+  latitude            Float
+  longitude           Float
+  amenities           Json               @default("[]")
+  vehicleTypes        VehicleType[]
+  rules               String?
+  instructions        String?
+  isInstantBook       Boolean            @default(false)
+  minBookingHours     Int                @default(1)
+  maxBookingHours     Int                @default(24)
+  advanceBookingHours Int                @default(24)
+  cancellationPolicy  String?
+  approvedAt          DateTime?
+  approvedBy          String?            @db.Uuid
+  rejectedAt          DateTime?
+  rejectedBy          String?            @db.Uuid
+  rejectionReason     String?
+  totalRevenue        Decimal            @default(0) @db.Decimal(14, 2)
+  totalBookings       Int                @default(0)
+  avgRating           Float              @default(0)
+  reviewCount         Int                @default(0)
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+  deletedAt           DateTime?
+
+  owner            User                  @relation("SpaceOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  images           ParkingImage[]
+  polygon          ParkingPolygon?
+  availability     ParkingAvailability[]
+  bookings         Booking[]
+  reviews          Review[]
+  securityContacts SecurityContact[]
+
+  @@index([ownerId])
+  @@index([status])
+  @@index([city])
+  @@index([latitude, longitude])
+  @@index([deletedAt])
+  @@map("parking_spaces")
+}
+
+// ─── Parking Images ───────────────────────────────────────────────────────────
+
+model ParkingImage {
+  id           String    @id @default(uuid()) @db.Uuid
+  spaceId      String    @db.Uuid
+  url          String
+  thumbnailUrl String?
+  caption      String?
+  isPrimary    Boolean   @default(false)
+  sortOrder    Int       @default(0)
+  width        Int?
+  height       Int?
+  fileSize     Int?
+  mimeType     String?
+  uploadedBy   String    @db.Uuid
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  space ParkingSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+
+  @@index([spaceId])
+  @@index([isPrimary])
+  @@map("parking_images")
+}
+
+// ─── Parking Polygons (GeoJSON boundary) ─────────────────────────────────────
+
+model ParkingPolygon {
+  id           String   @id @default(uuid()) @db.Uuid
+  spaceId      String   @unique @db.Uuid
+  coordinates  Json
+  areaSqMeters Float?
+  centerLat    Float?
+  centerLng    Float?
+  zoomLevel    Int      @default(18)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  space ParkingSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+
+  @@map("parking_polygons")
+}
+
+// ─── Parking Availability ─────────────────────────────────────────────────────
+// REGULAR rows define weekly schedule. OVERRIDE/BLOCKED rows target specific dates.
+
+model ParkingAvailability {
+  id            String           @id @default(uuid()) @db.Uuid
+  spaceId       String           @db.Uuid
+  type          AvailabilityType @default(REGULAR)
+  dayOfWeek     DayOfWeek?
+  date          DateTime?        @db.Date
+  openTime      String?
+  closeTime     String?
+  isAvailable   Boolean          @default(true)
+  slotOverride  Int?
+  priceOverride Decimal?         @db.Decimal(10, 2)
+  note          String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  space ParkingSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+
+  @@index([spaceId])
+  @@index([type])
+  @@index([dayOfWeek])
+  @@index([date])
+  @@map("parking_availability")
+}
+
+// ─── Bookings ─────────────────────────────────────────────────────────────────
+
+model Booking {
+  id                 String         @id @default(uuid()) @db.Uuid
+  bookingRef         String         @unique @default(cuid())
+  driverId           String         @db.Uuid
+  spaceId            String         @db.Uuid
+  status             BookingStatus  @default(PENDING)
+  startTime          DateTime
+  endTime            DateTime
+  actualStartTime    DateTime?
+  actualEndTime      DateTime?
+  vehicleNumber      String
+  vehicleType        VehicleType    @default(CAR)
+  baseAmount         Decimal        @db.Decimal(10, 2)
+  discountAmount     Decimal        @default(0) @db.Decimal(10, 2)
+  totalAmount        Decimal        @db.Decimal(10, 2)
+  coinsUsed          Int            @default(0)
+  coinDiscount       Decimal        @default(0) @db.Decimal(10, 2)
+  paymentStatus      PaymentStatus  @default(PENDING)
+  paymentMethod      PaymentMethod?
+  checkInCode        String?
+  checkOutCode       String?
+  checkedInAt        DateTime?
+  checkedOutAt       DateTime?
+  checkedInBy        String?        @db.Uuid
+  checkedOutBy       String?        @db.Uuid
+  cancellationReason String?
+  cancelledAt        DateTime?
+  cancelledBy        String?        @db.Uuid
+  disputeReason      String?
+  disputedAt         DateTime?
+  notes              String?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  deletedAt          DateTime?
+
+  driver            User                   @relation("DriverBookings", fields: [driverId], references: [id], onDelete: Restrict)
+  space             ParkingSpace           @relation(fields: [spaceId], references: [id], onDelete: Restrict)
+  statusHistory     BookingStatusHistory[]
+  verificationCodes VerificationCode[]
+  review            Review?
+
+  @@index([driverId])
+  @@index([spaceId])
+  @@index([status])
+  @@index([paymentStatus])
+  @@index([startTime, endTime])
+  @@index([bookingRef])
+  @@index([deletedAt])
+  @@map("bookings")
+}
+
+// ─── Booking Status History ───────────────────────────────────────────────────
+
+model BookingStatusHistory {
+  id         String         @id @default(uuid()) @db.Uuid
+  bookingId  String         @db.Uuid
+  fromStatus BookingStatus?
+  toStatus   BookingStatus
+  changedBy  String?        @db.Uuid
+  reason     String?
+  metadata   Json?
+  createdAt  DateTime       @default(now())
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@index([createdAt])
+  @@map("booking_status_history")
+}
+
+// ─── Verification Codes ───────────────────────────────────────────────────────
+
+model VerificationCode {
+  id          String               @id @default(uuid()) @db.Uuid
+  userId      String               @db.Uuid
+  bookingId   String?              @db.Uuid
+  type        VerificationCodeType
+  code        String
+  token       String?              @unique
+  isUsed      Boolean              @default(false)
+  usedAt      DateTime?
+  expiresAt   DateTime
+  attempts    Int                  @default(0)
+  maxAttempts Int                  @default(5)
+  metadata    Json?
+  createdAt   DateTime             @default(now())
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  booking Booking? @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([code, type])
+  @@index([token])
+  @@index([expiresAt])
+  @@map("verification_codes")
+}
+
+// ─── Security Contacts ────────────────────────────────────────────────────────
+
+model SecurityContact {
+  id        String    @id @default(uuid()) @db.Uuid
+  spaceId   String    @db.Uuid
+  userId    String    @unique @db.Uuid
+  name      String
+  phone     String
+  email     String?
+  isPrimary Boolean   @default(false)
+  isActive  Boolean   @default(true)
+  notes     String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  space ParkingSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  user  User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([spaceId])
+  @@index([userId])
+  @@map("security_contacts")
+}
+
+// ─── Owner Payouts ────────────────────────────────────────────────────────────
+
+model OwnerPayout {
+  id              String       @id @default(uuid()) @db.Uuid
+  walletId        String       @db.Uuid
+  amount          Decimal      @db.Decimal(12, 2)
+  currency        String       @default("BDT")
+  method          PayoutMethod
+  status          PayoutStatus @default(PENDING)
+  bankName        String?
+  accountNumber   String?
+  accountName     String?
+  routingNumber   String?
+  mobileNumber    String?
+  notes           String?
+  gatewayRef      String?
+  gatewayResponse Json?
+  processedAt     DateTime?
+  processedBy     String?      @db.Uuid
+  failureReason   String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  @@index([walletId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("owner_payouts")
+}
+
+// ─── Reviews ──────────────────────────────────────────────────────────────────
+
+model Review {
+  id                String    @id @default(uuid()) @db.Uuid
+  bookingId         String    @unique @db.Uuid
+  spaceId           String    @db.Uuid
+  authorId          String    @db.Uuid
+  targetId          String    @db.Uuid
+  overallRating     Int
+  cleanlinessRating Int?
+  accessRating      Int?
+  safetyRating      Int?
+  valueRating       Int?
+  comment           String?
+  ownerResponse     String?
+  ownerResponseAt   DateTime?
+  isVisible         Boolean   @default(true)
+  isVerified        Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  deletedAt         DateTime?
+
+  booking Booking      @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  space   ParkingSpace @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  author  User         @relation("ReviewAuthor", fields: [authorId], references: [id], onDelete: Restrict)
+  target  User         @relation("ReviewTarget", fields: [targetId], references: [id], onDelete: Restrict)
+
+  @@index([spaceId])
+  @@index([authorId])
+  @@index([targetId])
+  @@index([overallRating])
+  @@index([createdAt])
+  @@map("reviews")
+}
+
+// ─── Notifications ────────────────────────────────────────────────────────────
+
+model Notification {
+  id            String              @id @default(uuid()) @db.Uuid
+  userId        String              @db.Uuid
+  type          NotificationType
+  channel       NotificationChannel @default(IN_APP)
+  title         String
+  body          String
+  data          Json?
+  isRead        Boolean             @default(false)
+  readAt        DateTime?
+  isSent        Boolean             @default(false)
+  sentAt        DateTime?
+  failureReason String?
+  expiresAt     DateTime?
+  createdAt     DateTime            @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([type])
+  @@index([isRead])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+// ─── Audit Logs ───────────────────────────────────────────────────────────────
+// Immutable — append only, never update or delete rows.
+
+model AuditLog {
+  id         String      @id @default(uuid()) @db.Uuid
+  subjectId  String?     @db.Uuid
+  actorId    String?     @db.Uuid
+  action     AuditAction
+  entityType String
+  entityId   String?
+  oldValues  Json?
+  newValues  Json?
+  ipAddress  String?
+  userAgent  String?
+  metadata   Json?
+  createdAt  DateTime    @default(now())
+
+  subject User? @relation("AuditSubject", fields: [subjectId], references: [id], onDelete: SetNull)
+  actor   User? @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([subjectId])
+  @@index([actorId])
+  @@index([action])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ─── Admin Actions ────────────────────────────────────────────────────────────
+
+model AdminAction {
+  id         String          @id @default(uuid()) @db.Uuid
+  adminId    String          @db.Uuid
+  type       AdminActionType
+  entityType String
+  entityId   String
+  reason     String
+  notes      String?
+  metadata   Json?
+  result     String?
+  createdAt  DateTime        @default(now())
+
+  admin User @relation(fields: [adminId], references: [id], onDelete: Restrict)
+
+  @@index([adminId])
+  @@index([type])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("admin_actions")
+}
