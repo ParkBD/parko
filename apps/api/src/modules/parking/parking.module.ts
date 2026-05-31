@@ -3,8 +3,8 @@ import { ParkingService } from './parking.service';
 import { ParkingController } from './parking.controller';
 
 @Module({
-  providers: [ParkingService],
   controllers: [ParkingController],
+  providers: [ParkingService],
   exports: [ParkingService],
 })
 export class ParkingModule {}

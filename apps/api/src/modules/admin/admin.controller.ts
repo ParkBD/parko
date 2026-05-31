@@ -1,51 +1,62 @@
-import { Controller, Get, Param, Patch, Query } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Get, Param, Patch, Query } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { RoleType, UserStatus } from '@prisma/client';
+import { AdminService } from './admin.service';
+import { CurrentUser } from '@common/decorators/current-user.decorator';
 import { Roles } from '@common/decorators/roles.decorator';
-import { PrismaService } from '@infrastructure/prisma/prisma.service';
 
 @ApiTags('admin')
 @ApiBearerAuth()
-@Roles('ADMIN')
+@Roles(RoleType.ADMIN, RoleType.SUPER_ADMIN)
 @Controller('admin')
 export class AdminController {
-  constructor(private prisma: PrismaService) {}
+  constructor(private adminService: AdminService) {}
 
   @Get('stats')
-  async stats() {
-    const [users, lots, bookings, pendingLots, pendingWithdrawals] = await Promise.all([
-      this.prisma.user.count(),
-      this.prisma.parkingLot.count(),
-      this.prisma.booking.count(),
-      this.prisma.parkingLot.count({ where: { status: 'PENDING_APPROVAL' } }),
-      this.prisma.withdrawal.count({ where: { status: 'PENDING' } }),
-    ]);
-    return { users, lots, bookings, pendingLots, pendingWithdrawals };
-  }
-
-  @Get('lots/pending')
-  getPendingLots(@Query('page') page = 1, @Query('limit') limit = 20) {
-    return this.prisma.parkingLot.findMany({
-      where: { status: 'PENDING_APPROVAL' },
-      skip: (+page - 1) * +limit,
-      take: +limit,
-      include: { owner: { select: { email: true, firstName: true, lastName: true } } },
-    });
-  }
+  @ApiOperation({ summary: 'Dashboard stats' })
+  stats() { return this.adminService.getDashboardStats(); }
 
   @Get('users')
-  getUsers(@Query('page') page = 1, @Query('limit') limit = 20, @Query('role') role?: string) {
-    const where: any = role ? { role } : {};
-    return this.prisma.user.findMany({
-      where,
-      skip: (+page - 1) * +limit,
-      take: +limit,
-      orderBy: { createdAt: 'desc' },
-      select: { id: true, email: true, role: true, status: true, firstName: true, lastName: true, createdAt: true },
-    });
+  @ApiOperation({ summary: 'List users' })
+  getUsers(@Query('page') page = 1, @Query('limit') limit = 20, @Query('status') status?: UserStatus) {
+    return this.adminService.getUsers(+page, +limit, status);
   }
 
   @Patch('users/:id/status')
-  async updateUserStatus(@Param('id') id: string, @Query('status') status: string) {
-    return this.prisma.user.update({ where: { id }, data: { status: status as any } });
+  @ApiOperation({ summary: 'Update user status' })
+  updateUserStatus(
+    @Param('id') userId: string,
+    @CurrentUser('id') adminId: string,
+    @Body() body: { status: UserStatus; reason?: string },
+  ) {
+    return this.adminService.updateUserStatus(userId, body.status, adminId, body.reason);
+  }
+
+  @Get('spaces/pending')
+  @ApiOperation({ summary: 'Get pending space approvals' })
+  getPendingSpaces(@Query('page') page = 1, @Query('limit') limit = 20) {
+    return this.adminService.getPendingSpaces(+page, +limit);
+  }
+
+  @Patch('spaces/:id/approve')
+  @ApiOperation({ summary: 'Approve parking space' })
+  approveSpace(@Param('id') spaceId: string, @CurrentUser('id') adminId: string) {
+    return this.adminService.approveSpace(spaceId, adminId);
+  }
+
+  @Patch('spaces/:id/reject')
+  @ApiOperation({ summary: 'Reject parking space' })
+  rejectSpace(
+    @Param('id') spaceId: string,
+    @CurrentUser('id') adminId: string,
+    @Body() body: { reason: string },
+  ) {
+    return this.adminService.rejectSpace(spaceId, adminId, body.reason);
+  }
+
+  @Get('actions')
+  @ApiOperation({ summary: 'Get admin action log' })
+  getActions(@Query('page') page = 1, @Query('limit') limit = 50) {
+    return this.adminService.getAdminActions(+page, +limit);
   }
 }

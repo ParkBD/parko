@@ -3,8 +3,8 @@ import { WalletService } from './wallet.service';
 import { WalletController } from './wallet.controller';
 
 @Module({
-  providers: [WalletService],
   controllers: [WalletController],
+  providers: [WalletService],
   exports: [WalletService],
 })
 export class WalletModule {}

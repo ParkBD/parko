@@ -2,69 +2,50 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '@infrastructure/prisma/prisma.service';
 import { RedisService } from '@infrastructure/redis/redis.service';
 
-const SEARCH_CACHE_TTL = 120;
+const SEARCH_CACHE_TTL = 300;
 
-function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) ** 2;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-function isPointInPolygon(lat: number, lng: number, polygon: number[][]): boolean {
-  let inside = false;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const xi = polygon[i][0], yi = polygon[i][1];
-    const xj = polygon[j][0], yj = polygon[j][1];
-    const intersect = yi > lat !== yj > lat && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi;
-    if (intersect) inside = !inside;
-  }
-  return inside;
 }
 
 @Injectable()
 export class SearchService {
-  constructor(
-    private prisma: PrismaService,
-    private redis: RedisService,
-  ) {}
+  constructor(private prisma: PrismaService, private redis: RedisService) {}
 
-  async radiusSearch(lat: number, lng: number, radiusKm: number, startTime?: Date, endTime?: Date) {
-    const cacheKey = `search:radius:${lat}:${lng}:${radiusKm}`;
+  async searchNearby(lat: number, lng: number, radiusKm = 5, page = 1, limit = 20) {
+    const cacheKey = `search:nearby:${lat}:${lng}:${radiusKm}`;
     const cached = await this.redis.get(cacheKey);
-    if (cached) return JSON.parse(cached);
+    const allSpaces: any[] = cached ? JSON.parse(cached) : await this.fetchAndCache(cacheKey, lat, lng, radiusKm);
 
-    const lots = await this.prisma.parkingLot.findMany({
-      where: { status: 'ACTIVE' },
-      include: {
-        analytics: { select: { avgRating: true, totalBookings: true } },
-        _count: { select: { slots: true } },
-      },
+    const skip = (page - 1) * limit;
+    const paginated = allSpaces.slice(skip, skip + limit);
+    return { data: paginated, total: allSpaces.length, page, limit };
+  }
+
+  private async fetchAndCache(cacheKey: string, lat: number, lng: number, radiusKm: number) {
+    const spaces = await this.prisma.parkingSpace.findMany({
+      where: { status: 'ACTIVE', deletedAt: null },
+      include: { images: { where: { isPrimary: true, deletedAt: null }, take: 1 } },
     });
-
-    const nearby = lots
-      .map((lot) => ({
-        ...lot,
-        distance: haversineDistance(lat, lng, lot.latitude, lot.longitude),
-      }))
-      .filter((lot) => lot.distance <= radiusKm)
+    const nearby = spaces
+      .map((s) => ({ ...s, pricePerHour: s.pricePerHour.toNumber(), totalRevenue: s.totalRevenue.toNumber(), distance: haversineKm(lat, lng, s.latitude, s.longitude) }))
+      .filter((s) => s.distance <= radiusKm)
       .sort((a, b) => a.distance - b.distance);
-
     await this.redis.set(cacheKey, JSON.stringify(nearby), SEARCH_CACHE_TTL);
     return nearby;
   }
 
-  async polygonSearch(polygon: number[][], startTime?: Date, endTime?: Date) {
-    const lots = await this.prisma.parkingLot.findMany({
-      where: { status: 'ACTIVE' },
-      include: { analytics: true },
-    });
-
-    return lots.filter((lot) => isPointInPolygon(lot.latitude, lot.longitude, polygon));
+  async searchByCity(city: string, page = 1, limit = 20) {
+    const skip = (page - 1) * limit;
+    const where = { status: 'ACTIVE' as const, deletedAt: null as null, city: { contains: city, mode: 'insensitive' as const } };
+    const [data, total] = await Promise.all([
+      this.prisma.parkingSpace.findMany({ where, skip, take: limit, orderBy: { avgRating: 'desc' }, include: { images: { where: { isPrimary: true, deletedAt: null }, take: 1 } } }),
+      this.prisma.parkingSpace.count({ where }),
+    ]);
+    return { data: data.map((s) => ({ ...s, pricePerHour: s.pricePerHour.toNumber(), totalRevenue: s.totalRevenue.toNumber() })), total, page, limit };
   }
 }
